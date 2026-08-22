@@ -205,6 +205,4 @@ Their names, trademarks, software, and services belong to their respective owner
 
 ## License
 
-SBP is available under the [Apache License 2.0](LICENSE). Redistribution must preserve the project attribution in [NOTICE](NOTICE).
-
-<https://github.com/silenceremember/sbp-panel>
+Decided to fork SBP or use some of its code elsewhere? Please include a link to the [original project](https://github.com/silenceremember/sbp-panel). Other than that, it is the standard [Apache License 2.0](LICENSE) - keep the license and attribution from [NOTICE](NOTICE) where required.
