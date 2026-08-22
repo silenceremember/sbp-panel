@@ -526,6 +526,7 @@ type Component struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Installed    bool   `json:"installed"`
+	External     bool   `json:"external"`
 	Version      string `json:"version,omitempty"`
 	CanInstall   bool   `json:"can_install"`
 	CanUninstall bool   `json:"can_uninstall"`
@@ -598,7 +599,7 @@ func discover() Discovery {
 			}
 		}
 	}
-	d.Components = componentStates(d)
+	d.Components = componentStates(d, kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control") == "bbr")
 	return d
 }
 
@@ -627,7 +628,7 @@ func parseOSRelease(release []byte) string {
 	return strings.TrimSpace(strings.Join([]string{values["NAME"], values["VERSION"]}, " "))
 }
 
-func componentStates(d Discovery) []Component {
+func componentStates(d Discovery, bbr bool) []Component {
 	names := map[string]bool{}
 	for _, container := range d.Containers {
 		name := strings.ToLower(strings.TrimSpace(container))
@@ -650,25 +651,26 @@ func componentStates(d Discovery) []Component {
 			break
 		}
 	}
-	bbrValue, _ := os.ReadFile("/proc/sys/net/ipv4/tcp_congestion_control")
-	bbr := strings.TrimSpace(string(bbrValue)) == "bbr"
 	hasImage := func(image string) bool { return d.images[strings.ToLower(image)] }
 	_, tweaksOwned := componentOwnership("tweaks")
 	_, dockerOwned := componentOwnership("docker")
+	tweaksExternal := bbr && !tweaksOwned
+	dockerExternal := d.DockerAvailable && !dockerOwned
 	tweaksNote := ""
-	if bbr && !tweaksOwned {
+	if tweaksExternal {
 		tweaksNote = "Detected outside SBP. It will not be changed or removed."
 	}
 	dockerNote := ""
-	if d.DockerAvailable && !dockerOwned {
+	if dockerExternal {
 		dockerNote = "Detected outside SBP. It will not be changed or removed."
 	} else if d.DockerAvailable && (len(names) > 0 || len(d.images) > 0) {
 		dockerNote = "Remove all containers and images first."
 	}
 	_, xrayOwned := componentOwnership("xray")
 	xrayManaged := names[stableXrayVariant.Container] && stableXrayVariant.configPath() != "" && xrayOwned
+	xrayExternal := !xrayManaged && (hasExternalXray || names[stableXrayVariant.Container])
 	xrayNote := ""
-	if hasExternalXray || (names[stableXrayVariant.Container] && !xrayManaged) {
+	if hasExternalXray || xrayExternal {
 		xrayNote = "An external Xray container was detected. SBP will not change or remove it."
 	}
 	xhttpOwned := false
@@ -676,38 +678,41 @@ func componentStates(d Discovery) []Component {
 		xhttpOwned = true
 	}
 	xhttpManaged := names["xray-xhttp"] && xhttpXrayVariant.configPath() != "" && xhttpOwned
+	xhttpExternal := !xhttpManaged && (hasExternalXray || names["xray-xhttp"])
 	xhttpNote := ""
-	if hasExternalXray || (names["xray-xhttp"] && !xhttpManaged) {
+	if hasExternalXray || xhttpExternal {
 		xhttpNote = "An unowned Xray XHTTP container was detected. SBP will not change or remove it."
 	}
 	_, awgOwned := componentOwnership("amneziawg")
 	awgManaged := names["amnezia-awg2"] && fileExists("/opt/vpn-panel-managed/amneziawg/awg/awg0.conf") && awgOwned
+	awgExternal := !awgManaged && hasLike("amnezia-awg")
 	awgNote := ""
-	if hasLike("amnezia-awg") && !awgManaged {
+	if awgExternal {
 		awgNote = "An external AmneziaWG container was detected. SBP will not change or remove it."
 	}
-	bypassState := func(provider string) (bool, string) {
+	bypassState := func(provider string) (bool, bool, string) {
 		_, owned := componentOwnership("bypass-" + provider)
 		installed := owned && hasImage(bypassImage(provider))
-		if (hasLike("bypass-"+provider) || hasImage(bypassImage(provider))) && !installed {
-			return false, "External routing resources were detected. SBP will not change or remove them."
+		external := !installed && (hasLike("bypass-"+provider) || hasImage(bypassImage(provider)))
+		if external {
+			return false, true, "External routing resources were detected. SBP will not change or remove them."
 		}
-		return installed, ""
+		return installed, false, ""
 	}
-	wbInstalled, wbNote := bypassState("wb")
-	telemostInstalled, telemostNote := bypassState("telemost")
-	dionInstalled, dionNote := bypassState("dion")
-	vkInstalled, vkNote := bypassState("vk")
+	wbInstalled, wbExternal, wbNote := bypassState("wb")
+	telemostInstalled, telemostExternal, telemostNote := bypassState("telemost")
+	dionInstalled, dionExternal, dionNote := bypassState("dion")
+	vkInstalled, vkExternal, vkNote := bypassState("vk")
 	return []Component{
-		{ID: "tweaks", Name: "Network tuning (BBR + fq)", Installed: bbr, CanInstall: true, CanUninstall: bbr && tweaksOwned, Version: "v1", Description: "Enables TCP BBR with the fq queue discipline at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
-		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable, CanInstall: true, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
-		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, CanInstall: true, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
-		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, CanInstall: true, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
-		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, CanInstall: true, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides a WireGuard-compatible encrypted tunnel using AmneziaWG transport parameters. Runs in an independently managed Docker container.", Note: awgNote},
-		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, CanInstall: true, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated WB Stream connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: wbNote},
-		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, CanInstall: true, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated Yandex Telemost connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
-		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, CanInstall: true, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated DION connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: dionNote},
-		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, CanInstall: true, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated VK Calls connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: vkNote},
+		{ID: "tweaks", Name: "Network tuning (BBR + fq)", Installed: bbr && tweaksOwned, External: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: bbr && tweaksOwned, Version: "v1", Description: "Enables TCP BBR with the fq queue discipline at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
+		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
+		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
+		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
+		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides a WireGuard-compatible encrypted tunnel using AmneziaWG transport parameters. Runs in an independently managed Docker container.", Note: awgNote},
+		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated WB Stream connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: wbNote},
+		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated Yandex Telemost connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
+		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated DION connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: dionNote},
+		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated VK Calls connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: vkNote},
 	}
 }
 

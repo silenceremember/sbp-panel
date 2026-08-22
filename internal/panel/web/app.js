@@ -955,11 +955,15 @@ async function loadDiscovery(prefetched = null) {
     root.innerHTML = '';
     for (const component of d.components || []) {
       const row = document.createElement('tr');
-      const stateLabel = component.installed ? '<span class="state-pill up">Installed</span>' : '<span class="state-pill">Not installed</span>';
+      const stateLabel = component.external
+        ? '<span class="state-pill external">External</span>'
+        : component.installed ? '<span class="state-pill up">Installed</span>' : '<span class="state-pill">Not installed</span>';
       const version = `${escapeHTML(component.version || '-')}${component.id === 'xray' ? ' <span class="recommended">Recommended</span>' : ''}`;
-      const action = component.installed
-        ? buttonHTML('Remove', 'danger', 'data-uninstall')
-        : buttonHTML(component.can_install ? 'Install' : 'Unavailable', 'primary', `data-install ${component.can_install ? '' : 'disabled'}`.trim());
+      const action = component.external
+        ? '<span class="muted">-</span>'
+        : component.installed
+          ? buttonHTML('Remove', 'danger', 'data-uninstall')
+          : buttonHTML(component.can_install ? 'Install' : 'Unavailable', 'primary', `data-install ${component.can_install ? '' : 'disabled'}`.trim());
       const blocker = component.note || (component.installed && !component.can_uninstall ? 'The component was detected but is not managed by the panel.' : '');
       row.innerHTML = `<td><b>${escapeHTML(component.name)}</b></td><td>${version}</td><td>${stateLabel}</td><td><div class="install-note"><span>${escapeHTML(component.description || 'Managed panel component.')}</span>${blocker ? `<strong>${escapeHTML(blocker)}</strong>` : ''}</div></td><td><div class="component-actions">${action}</div></td>`;
       const button = row.querySelector('[data-install]');

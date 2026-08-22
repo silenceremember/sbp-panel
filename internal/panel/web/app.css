@@ -747,6 +747,11 @@ header {
   color: var(--good);
 }
 
+.state-pill.external {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .recommended {
   margin-left: 7px;
 }
