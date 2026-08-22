@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Check access · Simple Bridge Panel</title>
+  <link rel="icon" type="image/svg+xml" href="/sbp-icon.svg">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/check.js" defer></script>
+</head>
+<body>
+  <main class="center check-page">
+    <section class="card check-card">
+      <img class="check-logo" src="/sbp-logo.svg" alt="SBP - Simple Bridge Panel">
+      <h1>Check access</h1>
+      <p class="muted">Enter the exact group name to see its current status and expiration date.</p>
+      <form id="check-form" class="check-form">
+        <label for="group-name">Group name</label>
+        <input id="group-name" name="name" type="text" maxlength="160" autocomplete="off" spellcheck="false" placeholder="Enter group name" required autofocus>
+        <button id="check-button" type="submit">Check status</button>
+      </form>
+      <section id="check-result" class="check-result" aria-live="polite" hidden></section>
+    </section>
+  </main>
+</body>
+</html>

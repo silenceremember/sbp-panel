@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SBP · Simple Bridge Panel</title>
+  <link rel="icon" type="image/svg+xml" href="/sbp-icon.svg">
+  <link rel="preload" as="image" href="/sbp-logo.svg" type="image/svg+xml">
+  <link rel="preload" as="image" href="/sbp-logo-with-description.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main id="app"><section class="center loading-screen"><img class="loading-logo" src="/sbp-logo-with-description.svg" alt="SBP - Simple Bridge Panel"><div class="update-progress loading-progress" role="status" aria-live="polite"><div class="update-progress-copy"><span>Sit back and relax…</span></div><div class="update-progress-track loading-progress-track" role="progressbar" aria-label="Loading"><span></span></div></div></section></main>
+<section id="notifications" class="notifications" aria-live="polite" aria-label="Notifications"></section>
+
+<template id="auth">
+  <section class="center card auth">
+    <img class="auth-logo auth-logo-described" src="/sbp-logo-with-description.svg" alt="SBP - Simple Bridge Panel">
+    <form id="auth-form">
+      <input id="password" type="password" placeholder="Password - at least 8 characters" minlength="8" autocomplete="current-password" required>
+      <button>Sign in</button>
+    </form>
+    <button type="button" class="button-secondary auth-password-toggle" id="password-change-open">Change password</button>
+    <form id="password-change-form" hidden>
+      <h2 class="auth-form-title">Change password</h2>
+      <input id="current-password" type="password" placeholder="Current password" minlength="8" autocomplete="current-password" required>
+      <input id="new-password" type="password" placeholder="New password - at least 8 characters" minlength="8" autocomplete="new-password" required>
+      <input id="confirm-password" type="password" placeholder="Confirm new password" minlength="8" autocomplete="new-password" required>
+      <button>Change password</button>
+      <button type="button" class="button-secondary" id="password-change-cancel">Cancel</button>
+    </form>
+  </section>
+</template>
+
+<template id="dashboard">
+  <header>
+    <div class="header-inner">
+      <div class="brand"><img class="header-logo" src="/sbp-logo.svg" alt="SBP"><a id="server-link" class="server-link" target="_blank" rel="noreferrer" hidden></a><button class="button-link" id="server-link-edit">Add server page</button></div>
+      <div class="actions">
+        <button class="button-secondary" id="update-check">Check for updates</button>
+        <label class="toggle update-channel" title="Include GitHub pre-releases">
+          <input id="update-prereleases" type="checkbox" aria-label="Include GitHub pre-releases">
+          <span>Pre-release</span>
+        </label>
+        <button class="button-secondary" id="refresh">Refresh dashboard</button>
+        <button class="button-secondary" id="logout">Sign out</button>
+      </div>
+    </div>
+  </header>
+  <div class="layout">
+    <section class="panel-section groups-section">
+      <div class="title-row">
+        <div><h2>Groups</h2><p class="muted">Access and expiration are managed per group</p></div>
+        <button id="new-group">+Group</button>
+      </div>
+      <div id="groups" class="group-list"></div>
+    </section>
+
+    <section class="panel-section">
+      <div class="title-row"><div><h2>Server</h2><p class="muted">Live node status and monthly usage</p></div></div>
+      <div class="table-wrap"><table class="data-table server-table"><tbody id="server-state"><tr><td>Checking…</td></tr></tbody><tbody id="server-metrics"></tbody></table></div>
+    </section>
+
+    <section class="panel-section">
+      <div class="title-row"><div><h2>Components</h2><p class="muted">Set up the server from scratch, step by step</p></div></div>
+      <div class="table-wrap"><table class="data-table components-table">
+        <thead><tr><th>Component</th><th>Version</th><th>Status</th><th>Details</th><th class="actions-cell">Action</th></tr></thead>
+        <tbody id="components"></tbody>
+      </table></div>
+    </section>
+
+    <section class="split-section">
+      <div class="panel-section">
+        <div class="title-row"><div><h2>Service credentials</h2><p class="muted">Cookie JSON is stored in a root-only server directory</p></div></div>
+        <div class="form-panel">
+        <select id="provider">
+          <option value="wbstream">WB Stream</option>
+          <option value="telemost">Yandex Telemost</option>
+          <option value="dion">DION</option>
+          <option value="vk">VK Calls</option>
+        </select>
+        <label class="drop" id="drop">Drop the cookie JSON file here<input type="file" id="cookies" accept="application/json,.json"></label>
+        <div class="saved-rooms"><span class="saved-rooms-title">Rooms</span><div id="bypass-rooms" class="saved-room-list"><span class="muted">Loading…</span></div></div>
+        <div class="upload-footer"><button class="button-danger" id="clear-cookies">Clear credentials</button></div>
+        </div>
+      </div>
+      <div class="panel-section">
+        <div class="title-row"><div><h2>Client apps</h2><p class="muted">Tested compatible versions</p></div></div>
+        <div class="table-wrap"><table class="data-table links-table"><tbody>
+          <tr><td>AmneziaVPN</td><td>Windows / Android</td><td><a href="https://github.com/amnezia-vpn/amnezia-client" target="_blank" rel="noreferrer">GitHub</a></td></tr>
+          <tr><td>v2rayN</td><td>Windows · 7.24.6 <span class="recommended">Recommended</span></td><td><a href="https://github.com/2dust/v2rayN" target="_blank" rel="noreferrer">GitHub</a></td></tr>
+          <tr><td>v2rayNG</td><td>Android · 2.2.6 <span class="recommended">Recommended</span></td><td><a href="https://github.com/2dust/v2rayNG" target="_blank" rel="noreferrer">GitHub</a></td></tr>
+          <tr><td>Whitelist Bypass</td><td>Windows / Android · 0.3.8 <span class="recommended">Recommended</span></td><td><a href="https://github.com/kulikov0/whitelist-bypass" target="_blank" rel="noreferrer">GitHub</a></td></tr>
+        </tbody></table></div>
+      </div>
+    </section>
+  </div>
+</template>
+
+<dialog id="dialog">
+  <form method="dialog" id="dialog-form">
+    <h3 id="dialog-title"></h3>
+    <div id="dialog-body" class="form-stack"></div>
+    <div class="dialog-actions"><button value="cancel" class="button-secondary">Cancel</button><button value="default" id="dialog-ok">Save</button></div>
+  </form>
+</dialog>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Build and release artifacts
+/dist/
+/vpn-panel
+/vpn-panel.exe
+
+# Runtime state and secrets
+*.db
+*.db-*
+*.log
+*.pid
+*.sock
+.env
+.env.*
+cookies*.json
+*-cookies.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

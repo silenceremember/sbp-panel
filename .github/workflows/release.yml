@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - "main"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+      - name: Test
+        run: go test ./...
+      - name: Verify third-party notices
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          toolchain="$(go env GOVERSION)"
+          grep -Fq "BEGIN Go standard library ${toolchain} - LICENSE" NOTICE
+          while read -r module version; do
+            grep -Fq "BEGIN ${module} ${version} - LICENSE" NOTICE || {
+              echo "NOTICE is missing ${module} ${version}" >&2
+              exit 1
+            }
+          done < <(CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go list -deps -f '{{with .Module}}{{.Path}} {{.Version}}{{end}}' ./cmd/sbp-panel | sort -u | awk 'NF == 2')
+      - name: Test deploy scripts
+        run: bash deploy/test_scripts.sh
+      - name: Test clean panel lifecycle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          stage="$(mktemp -d)"
+          release_repo="$(mktemp -d)"
+          managed_sentinel="/opt/vpn-panel-managed/.sbp-ci-sentinel"
+          cleanup() {
+            if [ -x /usr/local/sbin/sbp-panel-uninstall ]; then
+              printf 'yes\n' | sudo /usr/local/sbin/sbp-panel-uninstall >/dev/null || true
+            fi
+            sudo rm -f "${managed_sentinel}"
+            rm -rf "${stage}" "${release_repo}"
+          }
+          trap cleanup EXIT
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "${stage}/sbp-panel-linux-amd64" ./cmd/sbp-panel
+          cp deploy/bootstrap.sh deploy/uninstall.sh "${stage}/"
+          cp LICENSE NOTICE "${stage}/"
+          chmod 0755 "${stage}/bootstrap.sh" "${stage}/uninstall.sh" "${stage}/sbp-panel-linux-amd64"
+
+          test_version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' internal/buildinfo/buildinfo.go)"
+          test_asset="sbp-panel-${test_version}-linux-amd64.zip"
+          mkdir -p "${release_repo}/v${test_version}"
+          (cd "${stage}" && zip -qr "${release_repo}/v${test_version}/${test_asset}" .)
+          test_sha="$(sha256sum "${release_repo}/v${test_version}/${test_asset}" | cut -d' ' -f1)"
+          test_size="$(stat -c '%s' "${release_repo}/v${test_version}/${test_asset}")"
+          printf '{"version":"%s","asset_name":"%s","sha256":"%s","size":%s}\n' \
+            "${test_version}" "${test_asset}" "${test_sha}" "${test_size}" \
+            > "${release_repo}/metadata.json"
+          printf 'SBP-CI-password\nSBP-CI-password\n' | script -qec \
+            "sudo env SBP_METADATA_URL=file://${release_repo}/metadata.json SBP_RELEASE_BASE_URL=file://${release_repo} bash install.sh" \
+            /dev/null
+          for attempt in $(seq 1 30); do
+            curl -skf https://127.0.0.1:9443/api/bootstrap/status >/dev/null && break
+            sleep 1
+          done
+          curl -skf https://127.0.0.1:9443/api/bootstrap/status | grep -q '"needs_bootstrap":false'
+          systemctl is-active --quiet vpn-panel.service vpn-panel-agent.service
+          sudo test -L /usr/local/sbin/sbp-panel-update
+
+          before="$(sudo sha256sum /etc/vpn-panel/config.json | cut -d' ' -f1)"
+          sudo "${stage}/bootstrap.sh" </dev/null
+          after="$(sudo sha256sum /etc/vpn-panel/config.json | cut -d' ' -f1)"
+          if [ "${before}" != "${after}" ]; then
+            echo "bootstrap changed the existing config" >&2
+            exit 1
+          fi
+          curl -skf https://127.0.0.1:9443/api/bootstrap/status >/dev/null
+
+          sudo install -d -m 0700 /opt/vpn-panel-managed
+          sudo touch "${managed_sentinel}"
+          printf 'yes\n' | sudo /usr/local/sbin/sbp-panel-uninstall
+          sudo test -f "${managed_sentinel}" || { echo "managed data was removed" >&2; exit 1; }
+          sudo test ! -e /usr/local/sbin/sbp-panel-update
+          for removed in \
+            /opt/vpn-panel \
+            /etc/vpn-panel \
+            /var/lib/vpn-panel \
+            /var/lib/vpn-panel-agent \
+            /usr/share/licenses/sbp-panel \
+            /etc/systemd/system/vpn-panel.service \
+            /etc/systemd/system/vpn-panel-agent.service; do
+            if [ -e "${removed}" ]; then
+              echo "panel uninstall left ${removed}" >&2
+              exit 1
+            fi
+          done
+      - name: Build release bundle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' internal/buildinfo/buildinfo.go)"
+          prerelease="$(sed -n 's/.*Prerelease[[:space:]]*=[[:space:]]*\(true\|false\).*/\1/p' internal/buildinfo/buildinfo.go)"
+          [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid source version ${version}" >&2; exit 1; }
+          [[ "${prerelease}" =~ ^(true|false)$ ]] || { echo "invalid prerelease category ${prerelease}" >&2; exit 1; }
+          if [[ "${GITHUB_REF}" == refs/tags/* ]] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match source version ${version}" >&2
+            exit 1
+          fi
+          bundle="dist/sbp-panel-${version}-linux-amd64"
+          mkdir -p "${bundle}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "${bundle}/sbp-panel-linux-amd64" ./cmd/sbp-panel
+          cp deploy/bootstrap.sh "${bundle}/bootstrap.sh"
+          cp deploy/uninstall.sh "${bundle}/uninstall.sh"
+          cp LICENSE NOTICE "${bundle}/"
+          chmod 0755 "${bundle}/bootstrap.sh" "${bundle}/uninstall.sh" "${bundle}/sbp-panel-linux-amd64"
+          (cd "${bundle}" && zip -qr "../sbp-panel-${version}-linux-amd64.zip" .)
+          archive="dist/sbp-panel-${version}-linux-amd64.zip"
+          expected_entries="$(printf '%s\n' LICENSE NOTICE bootstrap.sh sbp-panel-linux-amd64 uninstall.sh | sort)"
+          actual_entries="$(unzip -Z1 "${archive}" | sed '/\/$/d' | sort)"
+          test "${actual_entries}" = "${expected_entries}" || {
+            echo "unexpected release entries:" >&2
+            printf '%s\n' "${actual_entries}" >&2
+            exit 1
+          }
+          digest="$(sha256sum "${archive}" | cut -d' ' -f1)"
+          size="$(stat -c '%s' "${archive}")"
+          printf '{"version":"%s","asset_name":"%s","sha256":"%s","size":%s}\n' \
+            "${version}" "$(basename "${archive}")" "${digest}" "${size}" \
+            > dist/sbp-panel-update.json
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          prerelease="$(sed -n 's/.*Prerelease[[:space:]]*=[[:space:]]*\(true\|false\).*/\1/p' internal/buildinfo/buildinfo.go)"
+          release_flags=(--latest)
+          if [ "${prerelease}" = true ]; then
+            release_flags=(--prerelease --latest=false)
+          fi
+          gh release create "${GITHUB_REF_NAME}" \
+            "dist/sbp-panel-${GITHUB_REF_NAME#v}-linux-amd64.zip" \
+            "dist/sbp-panel-update.json" \
+            --verify-tag --generate-notes --title "SBP Panel ${GITHUB_REF_NAME}" \
+            "${release_flags[@]}"
