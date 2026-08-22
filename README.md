@@ -91,7 +91,16 @@ Connect to the server over SSH and run:
 curl -fsSL https://raw.githubusercontent.com/silenceremember/sbp-panel/main/install.sh | sudo bash
 ```
 
-Enter the administrator password twice, then open:
+Choose the latest stable release (the default) or the newest GitHub pre-release,
+then enter the administrator password twice. For unattended use, set
+`SBP_RELEASE_CHANNEL=stable` or `SBP_RELEASE_CHANNEL=prerelease` on the `bash`
+process. The installer never switches channels silently.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/silenceremember/sbp-panel/main/install.sh | sudo env SBP_RELEASE_CHANNEL=prerelease bash
+```
+
+Then open:
 
 ```text
 https://YOUR_SERVER_IP:9443

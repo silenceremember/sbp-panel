@@ -34,12 +34,14 @@ if [ "$(id -u)" -ne 0 ]; then
   fail "Run as root: curl -fsSL https://raw.githubusercontent.com/silenceremember/sbp-panel/main/install.sh | sudo bash"
 fi
 
-METADATA_URL="${SBP_METADATA_URL:-https://github.com/silenceremember/sbp-panel/releases/latest/download/sbp-panel-update.json}"
 RELEASE_BASE_URL="${SBP_RELEASE_BASE_URL:-https://github.com/silenceremember/sbp-panel/releases/download}"
+STABLE_METADATA_URL="${SBP_STABLE_METADATA_URL:-https://github.com/silenceremember/sbp-panel/releases/latest/download/sbp-panel-update.json}"
+RELEASES_API_URL="${SBP_RELEASES_API_URL:-https://api.github.com/repos/silenceremember/sbp-panel/releases?per_page=20}"
 WORKDIR="$(mktemp -d)"
 INSTALLED_UNZIP=0
 MAX_METADATA_BYTES=65536
 MAX_ARCHIVE_BYTES=$((128 * 1024 * 1024))
+MAX_RELEASES_BYTES=$((1024 * 1024))
 cleanup() {
   rm -rf "${WORKDIR}"
   if [ "${INSTALLED_UNZIP}" -eq 1 ]; then
@@ -48,7 +50,68 @@ cleanup() {
 }
 trap cleanup EXIT
 
-metadata="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 "${METADATA_URL}" | head -c $((MAX_METADATA_BYTES + 1)))"
+release_channel="${SBP_RELEASE_CHANNEL:-}"
+if [ -n "${SBP_METADATA_URL:-}" ]; then
+  METADATA_URL="${SBP_METADATA_URL}"
+  release_channel=custom
+else
+  if [ -z "${release_channel}" ] && [ -r /dev/tty ]; then
+    printf '%s%sRelease channel%s\n' "${SBP_ACCENT}" "${SBP_BOLD}" "${SBP_RESET}"
+    printf '  1) Latest stable (recommended)\n'
+    printf '  2) Latest pre-release\n'
+    printf '%sChoose [1]: %s' "${SBP_ACCENT}" "${SBP_RESET}"
+    IFS= read -r release_choice </dev/tty || fail "Could not read the release channel."
+    case "${release_choice}" in
+      "" | 1) release_channel=stable ;;
+      2) release_channel=prerelease ;;
+      *) fail "Choose 1 for stable or 2 for pre-release." ;;
+    esac
+  fi
+  release_channel="${release_channel:-stable}"
+
+  case "${release_channel}" in
+    stable)
+      METADATA_URL="${STABLE_METADATA_URL}"
+      ;;
+    prerelease)
+      releases_file="${WORKDIR}/releases.json"
+      if ! curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+        --max-filesize "${MAX_RELEASES_BYTES}" \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        "${RELEASES_API_URL}" -o "${releases_file}"; then
+        fail "Could not load the GitHub release list."
+      fi
+      [ "$(stat -c '%s' "${releases_file}")" -le "${MAX_RELEASES_BYTES}" ] \
+        || fail "The GitHub release list is too large."
+      prerelease_tag="$(awk '
+        /"tag_name":[[:space:]]*"/ {
+          tag = $0
+          sub(/^.*"tag_name":[[:space:]]*"/, "", tag)
+          sub(/".*$/, "", tag)
+        }
+        /"prerelease":[[:space:]]*true/ && tag != "" {
+          print tag
+          exit
+        }
+      ' "${releases_file}")"
+      [[ "${prerelease_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || fail "No installable pre-release was found."
+      METADATA_URL="${RELEASE_BASE_URL}/${prerelease_tag}/sbp-panel-update.json"
+      ;;
+    *)
+      fail "SBP_RELEASE_CHANNEL must be stable or prerelease."
+      ;;
+  esac
+fi
+
+printf '%sRelease channel:%s %s\n' "${SBP_ACCENT}" "${SBP_RESET}" "${release_channel}"
+if ! metadata="$(curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 "${METADATA_URL}" | head -c $((MAX_METADATA_BYTES + 1)))"; then
+  if [ "${release_channel}" = stable ]; then
+    fail "Could not load a stable release. Re-run the installer and choose pre-release if appropriate."
+  fi
+  fail "Could not load release metadata."
+fi
 [ "${#metadata}" -le "${MAX_METADATA_BYTES}" ] || fail "The release metadata is too large."
 version="$(printf '%s' "${metadata}" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
 asset="$(printf '%s' "${metadata}" | sed -n 's/.*"asset_name":"\([^"]*\)".*/\1/p')"
