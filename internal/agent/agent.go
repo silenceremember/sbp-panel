@@ -681,7 +681,7 @@ func componentStates(d Discovery, bbr bool) []Component {
 	xhttpExternal := !xhttpManaged && (hasExternalXray || names["xray-xhttp"])
 	xhttpNote := ""
 	if hasExternalXray || xhttpExternal {
-		xhttpNote = "An unowned Xray XHTTP container was detected. SBP will not change or remove it."
+		xhttpNote = "An external Xray XHTTP container was detected. SBP will not change or remove it."
 	}
 	_, awgOwned := componentOwnership("amneziawg")
 	awgManaged := names["amnezia-awg2"] && fileExists("/opt/vpn-panel-managed/amneziawg/awg/awg0.conf") && awgOwned
