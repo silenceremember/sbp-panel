@@ -127,6 +127,7 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("GET /api/update/progress", auth(s.updateProgress))
 	m.Handle("POST /api/components/{id}/install", admin(s.installComponent))
 	m.Handle("DELETE /api/components/{id}", admin(s.uninstallComponent))
+	m.Handle("DELETE /api/components/{id}/external", admin(s.removeExternalComponent))
 	m.Handle("GET /api/components/{id}/install", auth(s.installStatus))
 	m.Handle("POST /api/bypass/{provider}/credentials", admin(s.uploadBypass))
 	m.Handle("DELETE /api/bypass/{provider}/credentials", admin(s.clearBypass))
@@ -1269,6 +1270,16 @@ func (s *server) uninstallComponent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.proxyAgent(w, r, "DELETE", "/v1/components/"+id)
 }
+
+func (s *server) removeExternalComponent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id != "tweaks" && id != "docker" {
+		fail(w, http.StatusBadRequest, errors.New("external removal is not supported for this component"))
+		return
+	}
+	s.proxyAgent(w, r, http.MethodDelete, "/v1/components/"+id+"/external")
+}
+
 func (s *server) proxyAgent(w http.ResponseWriter, r *http.Request, method, path string) {
 	req, _ := http.NewRequest(method, "http://unix"+path, nil)
 	resp, err := s.agent.Do(req)

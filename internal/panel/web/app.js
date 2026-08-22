@@ -231,6 +231,12 @@ const buttonHTML = (label, variant = 'primary', attributes = '') => {
   const className = variant === 'primary' ? '' : ` class="button-${variant}"`;
   return `<button${className}${attributes ? ` ${attributes}` : ''}>${escapeHTML(label)}</button>`;
 };
+function setDialogAction(label, danger = false) {
+  const button = document.querySelector('#dialog-ok');
+  button.textContent = label;
+  button.className = danger ? 'button-danger' : '';
+  return button;
+}
 async function runPendingAction(key, control, pendingLabel, action) {
   if (pendingActions.has(key)) return false;
   pendingActions.add(key);
@@ -594,7 +600,7 @@ function setupServerLink() {
     const dialog = document.querySelector('#dialog');
     const body = document.querySelector('#dialog-body');
     document.querySelector('#dialog-title').textContent = 'Server page';
-    document.querySelector('#dialog-ok').textContent = 'Save';
+    setDialogAction('Save');
     body.innerHTML = `<label>URL<input id="server-url" type="url" placeholder="https://hosting.example/server/123" value="${escapeHTML(state.server_url || '')}"></label><small class="muted">A plain text link to the hosting dashboard or this server page will appear in the header.</small>`;
     dialog.showModal();
     document.querySelector('#dialog-form').onsubmit = async event => {
@@ -619,7 +625,7 @@ function groupDialog(group = null) {
   const dialog = document.querySelector('#dialog');
   const body = document.querySelector('#dialog-body');
   document.querySelector('#dialog-title').textContent = group ? 'Group settings' : 'New group';
-  document.querySelector('#dialog-ok').textContent = group ? 'Save' : 'Create';
+  setDialogAction(group ? 'Save' : 'Create');
   body.innerHTML = `
     <label>Name<input id="group-name" value="${escapeHTML(group?.name || 'My group')}" maxlength="160" required><small class="muted">Letters, numbers, spaces, and hyphens only. Spaces become underscores in the public link.</small></label>
     <label>Contact<input id="group-contact" value="${escapeHTML(group?.contact || '')}" placeholder="Telegram, phone number, name - any text"></label>
@@ -748,7 +754,7 @@ function deviceDialog(device) {
   const body = document.querySelector('#dialog-body');
   const editing = Boolean(device.id);
   document.querySelector('#dialog-title').textContent = editing ? 'Device' : 'New device';
-  document.querySelector('#dialog-ok').textContent = editing ? 'Save' : 'Create';
+  setDialogAction(editing ? 'Save' : 'Create');
   const selectedMethod = device.method === 'amneziawg'
     ? `amneziawg-${device.format === 'app' ? 'app' : 'native'}`
     : (device.method || 'xray');
@@ -923,16 +929,18 @@ async function copyCredential(title, credential, id) {
 }
 
 async function runComponentLifecycle(component, button, operation) {
-  const removing = operation === 'uninstall';
+  const installing = operation === 'install';
+  const path = operation === 'external-remove'
+    ? `/api/components/${component.id}/external`
+    : installing ? `/api/components/${component.id}/install` : `/api/components/${component.id}`;
   try {
     return await runPendingAction(
       `component:${component.id}:lifecycle`,
       button,
-      removing ? 'Removing…' : 'Installing…',
+      installing ? 'Installing…' : 'Removing…',
       async () => {
-        const path = removing ? `/api/components/${component.id}` : `/api/components/${component.id}/install`;
-        await api(path, {method: removing ? 'DELETE' : 'POST'});
-        await watchJob(component.id, button, operation, {throwOnError: true});
+        await api(path, {method: installing ? 'POST' : 'DELETE'});
+        await watchJob(component.id, button, installing ? 'install' : 'uninstall', {throwOnError: true});
       }
     );
   } catch (error) {
@@ -940,6 +948,26 @@ async function runComponentLifecycle(component, button, operation) {
     notifyError(error);
     return false;
   }
+}
+
+function externalRemovalDialog(component) {
+  const generation = ++dialogGeneration;
+  const dialog = document.querySelector('#dialog');
+  const body = document.querySelector('#dialog-body');
+  document.querySelector('#dialog-title').textContent = `Remove external ${component.name}?`;
+  setDialogAction('Remove external', true);
+  const warning = component.id === 'docker'
+    ? 'SBP will remove an external Ubuntu docker.io package only if containers, images, volumes, and custom networks are all absent. External configuration and data directories are never deleted.'
+    : 'SBP will reset active BBR and fq only when no persistent external configuration enables them. External configuration files are never edited.';
+  body.innerHTML = `<p>${escapeHTML(warning)}</p><p class="muted">After removal, install the component again to make it fully managed by SBP.</p>`;
+  dialog.showModal();
+  document.querySelector('#dialog-form').onsubmit = async event => {
+    if (event.submitter?.value === 'cancel') return;
+    event.preventDefault();
+    const submit = event.submitter || document.querySelector('#dialog-ok');
+    const removed = await runComponentLifecycle(component, submit, 'external-remove');
+    if (removed && generation === dialogGeneration && dialog.open) dialog.close();
+  };
 }
 
 async function loadDiscovery(prefetched = null) {
@@ -960,7 +988,7 @@ async function loadDiscovery(prefetched = null) {
         : component.installed ? '<span class="state-pill up">Installed</span>' : '<span class="state-pill">Not installed</span>';
       const version = `${escapeHTML(component.version || '-')}${component.id === 'xray' ? ' <span class="recommended">Recommended</span>' : ''}`;
       const action = component.external
-        ? '<span class="muted">-</span>'
+        ? component.can_remove_external ? buttonHTML('Remove', 'danger', 'data-remove-external') : '<span class="muted">-</span>'
         : component.installed
           ? buttonHTML('Remove', 'danger', 'data-uninstall')
           : buttonHTML(component.can_install ? 'Install' : 'Unavailable', 'primary', `data-install ${component.can_install ? '' : 'disabled'}`.trim());
@@ -971,6 +999,7 @@ async function loadDiscovery(prefetched = null) {
         if (!component.can_install) { notify(component.note || 'Complete the setup section below first.', 'warning'); return; }
         await runComponentLifecycle(component, button, 'install');
       };
+      row.querySelector('[data-remove-external]')?.addEventListener('click', () => externalRemovalDialog(component));
       row.querySelector('[data-uninstall]')?.addEventListener('click', async event => {
         const remove = event.currentTarget;
         if (!component.can_uninstall) {

@@ -67,6 +67,44 @@ func TestUpdateChannelForwarding(t *testing.T) {
 	}
 }
 
+func TestExternalComponentRemovalForwarding(t *testing.T) {
+	for _, test := range []struct {
+		id         string
+		wantPath   string
+		wantStatus int
+	}{
+		{id: "tweaks", wantPath: "/v1/components/tweaks/external", wantStatus: http.StatusOK},
+		{id: "docker", wantPath: "/v1/components/docker/external", wantStatus: http.StatusOK},
+		{id: "xray", wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.id, func(t *testing.T) {
+			calls := 0
+			agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if request.Method != http.MethodDelete || request.URL.RequestURI() != test.wantPath {
+					t.Fatalf("agent request = %s %s", request.Method, request.URL.RequestURI())
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+			})}
+			s := &server{agent: agent}
+			request := httptest.NewRequest(http.MethodDelete, "/api/components/"+test.id+"/external", nil)
+			request.SetPathValue("id", test.id)
+			response := httptest.NewRecorder()
+			s.removeExternalComponent(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+			wantCalls := 0
+			if test.wantStatus == http.StatusOK {
+				wantCalls = 1
+			}
+			if calls != wantCalls {
+				t.Fatalf("agent calls=%d, want %d", calls, wantCalls)
+			}
+		})
+	}
+}
+
 func TestAmneziaAppCredentialRoundTrip(t *testing.T) {
 	native := "[Interface]\nPrivateKey = secret\n[Peer]\nEndpoint = 192.0.2.1:443\n"
 	got := displayCredential(store.Device{Method: "amneziawg", Format: "app", Credential: native})

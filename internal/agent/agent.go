@@ -2,6 +2,7 @@ package agent
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -523,15 +524,16 @@ func readNetworkCounters(iface string) (uint64, uint64, error) {
 }
 
 type Component struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Installed    bool   `json:"installed"`
-	External     bool   `json:"external"`
-	Version      string `json:"version,omitempty"`
-	CanInstall   bool   `json:"can_install"`
-	CanUninstall bool   `json:"can_uninstall"`
-	Description  string `json:"description,omitempty"`
-	Note         string `json:"note,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Installed         bool   `json:"installed"`
+	External          bool   `json:"external"`
+	CanRemoveExternal bool   `json:"can_remove_external"`
+	Version           string `json:"version,omitempty"`
+	CanInstall        bool   `json:"can_install"`
+	CanUninstall      bool   `json:"can_uninstall"`
+	Description       string `json:"description,omitempty"`
+	Note              string `json:"note,omitempty"`
 }
 
 type installJob struct {
@@ -704,8 +706,8 @@ func componentStates(d Discovery, bbr bool) []Component {
 	dionInstalled, dionExternal, dionNote := bypassState("dion")
 	vkInstalled, vkExternal, vkNote := bypassState("vk")
 	return []Component{
-		{ID: "tweaks", Name: "Network tuning (BBR + fq)", Installed: bbr && tweaksOwned, External: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: bbr && tweaksOwned, Version: "v1", Description: "Enables TCP BBR with the fq queue discipline at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
-		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
+		{ID: "tweaks", Name: "Network tuning (BBR + fq)", Installed: bbr && tweaksOwned, External: tweaksExternal, CanRemoveExternal: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: bbr && tweaksOwned, Version: "v1", Description: "Enables TCP BBR with the fq queue discipline at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
+		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
 		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides a WireGuard-compatible encrypted tunnel using AmneziaWG transport parameters. Runs in an independently managed Docker container.", Note: awgNote},
@@ -794,6 +796,13 @@ func (i *installer) startUninstall(id string) error {
 		return errors.New("unknown component")
 	}
 	return i.startJob(id, uninstallComponent)
+}
+
+func (i *installer) startExternalRemoval(id string) error {
+	if id != "tweaks" && id != "docker" {
+		return errors.New("external removal is not supported for this component")
+	}
+	return i.startJob(id, removeExternalComponent)
 }
 
 func (i *installer) startJob(id string, operation func(string, config.Config) (string, error)) error {
@@ -1226,6 +1235,232 @@ func uninstallDocker() (string, error) {
 		return "", err
 	}
 	return "Docker packages and directories proven to be SBP-created were removed", nil
+}
+
+type externalRemovalOps struct {
+	run               func(string, ...string) (string, error)
+	lookPath          func(string) (string, error)
+	installedPackages func() (map[string]struct{}, error)
+	dockerInventory   func() error
+	kernelSetting     func(string) string
+	tuningConfigFiles func() ([]string, error)
+}
+
+func defaultExternalRemovalOps() externalRemovalOps {
+	return externalRemovalOps{
+		run:               run,
+		lookPath:          exec.LookPath,
+		installedPackages: installedDPKGPackages,
+		dockerInventory:   requireEmptyDockerInventory,
+		kernelSetting:     kernelSetting,
+		tuningConfigFiles: externalNetworkTuningFiles,
+	}
+}
+
+func externalNetworkTuningFiles() ([]string, error) {
+	paths := []string{"/etc/sysctl.conf"}
+	for _, pattern := range []string{
+		"/etc/sysctl.d/*.conf",
+		"/run/sysctl.d/*.conf",
+		"/usr/local/lib/sysctl.d/*.conf",
+		"/usr/lib/sysctl.d/*.conf",
+		"/lib/sysctl.d/*.conf",
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, matches...)
+	}
+	conflicts := map[string]struct{}{}
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect network tuning file %q: %w", path, err)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("inspect network tuning file %q: %w", path, err)
+		}
+		if info.Size() > 1<<20 {
+			_ = file.Close()
+			return nil, fmt.Errorf("network tuning file %q is too large to inspect safely", path)
+		}
+		scanner := bufio.NewScanner(io.LimitReader(file, 1<<20))
+		for scanner.Scan() {
+			key, value := parseSysctlSetting(scanner.Text())
+			if (key == "net.ipv4.tcp_congestion_control" && value == "bbr") || (key == "net.core.default_qdisc" && value == "fq") {
+				conflicts[path] = struct{}{}
+			}
+		}
+		scanErr := scanner.Err()
+		closeErr := file.Close()
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan network tuning file %q: %w", path, scanErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close network tuning file %q: %w", path, closeErr)
+		}
+	}
+	result := make([]string, 0, len(conflicts))
+	for path := range conflicts {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func parseSysctlSetting(line string) (string, string) {
+	if comment := strings.IndexAny(line, "#;"); comment >= 0 {
+		line = line[:comment]
+	}
+	key, value, ok := strings.Cut(line, "=")
+	if !ok {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return "", ""
+		}
+		key, value = fields[0], fields[1]
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(key), "-")), strings.TrimSpace(value)
+}
+
+func removeExternalNetworkTuning(ops externalRemovalOps) (string, error) {
+	if ops.kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control") != "bbr" {
+		return "", errors.New("external BBR is no longer active")
+	}
+	conflicts, err := ops.tuningConfigFiles()
+	if err != nil {
+		return "", err
+	}
+	if len(conflicts) > 0 {
+		return "", fmt.Errorf("external BBR or fq is configured in %s; remove those settings manually first", strings.Join(conflicts, ", "))
+	}
+	available := strings.Fields(ops.kernelSetting("/proc/sys/net/ipv4/tcp_available_congestion_control"))
+	fallback := ""
+	for _, candidate := range []string{"cubic", "reno"} {
+		if slicesContains(available, candidate) {
+			fallback = candidate
+			break
+		}
+	}
+	if fallback == "" {
+		return "", errors.New("no safe non-BBR congestion control is available")
+	}
+	previousCC := ops.kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control")
+	previousQdisc := ops.kernelSetting("/proc/sys/net/core/default_qdisc")
+	restore := func() error {
+		var restoreErrs []error
+		for _, setting := range [][2]string{
+			{"net.ipv4.tcp_congestion_control", previousCC},
+			{"net.core.default_qdisc", previousQdisc},
+		} {
+			if output, err := ops.run("sysctl", "-w", setting[0]+"="+setting[1]); err != nil {
+				restoreErrs = append(restoreErrs, fmt.Errorf("restore %s: %w: %s", setting[0], err, strings.TrimSpace(output)))
+			}
+		}
+		return errors.Join(restoreErrs...)
+	}
+	out, err := ops.run("sysctl", "-w", "net.core.default_qdisc=fq_codel")
+	if err != nil {
+		return out, fmt.Errorf("restore the default queue discipline: %w", err)
+	}
+	ccOut, err := ops.run("sysctl", "-w", "net.ipv4.tcp_congestion_control="+fallback)
+	out = strings.TrimSpace(strings.Join([]string{out, ccOut}, "\n"))
+	if err != nil {
+		return out, errors.Join(fmt.Errorf("disable external BBR: %w", err), restore())
+	}
+	if ops.kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control") == "bbr" || ops.kernelSetting("/proc/sys/net/core/default_qdisc") != "fq_codel" {
+		return out, errors.Join(errors.New("external network tuning remained active after reset"), restore())
+	}
+	return out, nil
+}
+
+func slicesContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func removeExternalDocker(ops externalRemovalOps) (string, error) {
+	dockerPath, err := ops.lookPath("docker")
+	if err != nil {
+		return "", errors.New("external Docker is no longer installed")
+	}
+	if err := ops.dockerInventory(); err != nil {
+		return "", err
+	}
+	ownerOutput, err := ops.run("dpkg-query", "-S", dockerPath)
+	if err != nil {
+		return ownerOutput, fmt.Errorf("prove ownership of Docker executable %q: %w", dockerPath, err)
+	}
+	owner, _, found := strings.Cut(strings.TrimSpace(ownerOutput), ": ")
+	if !found || owner != "docker.io" {
+		return ownerOutput, fmt.Errorf("Docker executable %q is not owned by the supported Ubuntu docker.io package", dockerPath)
+	}
+	installed, err := ops.installedPackages()
+	if err != nil {
+		return "", fmt.Errorf("inventory Docker packages before external removal: %w", err)
+	}
+	if _, ok := installed[owner]; !ok {
+		return "", errors.New("the Docker package inventory changed during removal")
+	}
+	activeOutput, _ := ops.run("systemctl", "is-active", "docker.service")
+	enabledOutput, _ := ops.run("systemctl", "is-enabled", "docker.service")
+	restoreService := func() error {
+		var restoreErrs []error
+		if strings.TrimSpace(enabledOutput) == "enabled" {
+			if output, err := ops.run("systemctl", "enable", "docker.service"); err != nil {
+				restoreErrs = append(restoreErrs, fmt.Errorf("restore Docker enablement: %w: %s", err, strings.TrimSpace(output)))
+			}
+		}
+		if strings.TrimSpace(activeOutput) == "active" {
+			if output, err := ops.run("systemctl", "start", "docker.service"); err != nil {
+				restoreErrs = append(restoreErrs, fmt.Errorf("restart Docker after failed removal: %w: %s", err, strings.TrimSpace(output)))
+			}
+		}
+		return errors.Join(restoreErrs...)
+	}
+	if output, err := ops.run("systemctl", "disable", "--now", "docker.service", "docker.socket"); err != nil {
+		return output, errors.Join(fmt.Errorf("stop external Docker before package removal: %w", err), restoreService())
+	}
+	out, err := ops.run("apt-get", "purge", "-y", owner)
+	if err != nil {
+		return out, errors.Join(fmt.Errorf("remove external Docker packages: %w", err), restoreService())
+	}
+	if path, err := ops.lookPath("docker"); err == nil {
+		return out, fmt.Errorf("Docker executable remained after package removal: %s", path)
+	}
+	remaining, err := ops.installedPackages()
+	if err != nil {
+		return out, fmt.Errorf("verify Docker packages after external removal: %w", err)
+	}
+	if _, ok := remaining[owner]; ok {
+		return out, fmt.Errorf("Docker package %q remained after removal", owner)
+	}
+	return out, nil
+}
+
+func removeExternalComponent(id string, _ config.Config) (string, error) {
+	if _, owned := componentOwnership(id); owned {
+		return "", errors.New("the component is managed by SBP; use ordinary removal")
+	}
+	ops := defaultExternalRemovalOps()
+	switch id {
+	case "tweaks":
+		return removeExternalNetworkTuning(ops)
+	case "docker":
+		return removeExternalDocker(ops)
+	default:
+		return "", errors.New("external removal is not supported for this component")
+	}
 }
 
 func uninstallComponent(id string, c config.Config) (string, error) {
@@ -2568,6 +2803,17 @@ func Run(configPath string) error {
 	})
 	mux.HandleFunc("DELETE /v1/components/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := inst.startUninstall(r.PathValue("id")); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errLifecycleBusy) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "job": inst.get(r.PathValue("id"))})
+	})
+	mux.HandleFunc("DELETE /v1/components/{id}/external", func(w http.ResponseWriter, r *http.Request) {
+		if err := inst.startExternalRemoval(r.PathValue("id")); err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, errLifecycleBusy) {
 				status = http.StatusConflict

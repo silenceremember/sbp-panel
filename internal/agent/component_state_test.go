@@ -44,6 +44,10 @@ func TestComponentStatesMarkUnownedResourcesExternal(t *testing.T) {
 		if !strings.Contains(strings.ToLower(component.Note), "external") && !strings.Contains(component.Note, "outside SBP") {
 			t.Errorf("%s external note = %q", id, component.Note)
 		}
+		wantRemoval := id == "tweaks" || id == "docker"
+		if component.CanRemoveExternal != wantRemoval {
+			t.Errorf("%s can_remove_external = %v, want %v", id, component.CanRemoveExternal, wantRemoval)
+		}
 	}
 }
 
