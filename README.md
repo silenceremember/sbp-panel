@@ -81,7 +81,7 @@ SBP provides a management layer around these upstream projects; it does not crea
 | 48692 | UDP | AmneziaWG |
 
 > [!IMPORTANT]
-> SBP 1.x is installed on a fresh server and does not upgrade 0.x installations. Existing VPN software, containers, occupied ports, or custom networking may be detected as external and will not be adopted or removed.
+> SBP 1.x is installed on a fresh server and does not upgrade 0.x installations. Existing VPN software, containers, occupied ports, or custom networking are detected as external and are never adopted. A double-confirmed removal is available only for an empty Ubuntu `docker.io` installation and exact persistent BBR/fq sysctl assignments, so they can be replaced with SBP-managed components.
 
 ## Install
 

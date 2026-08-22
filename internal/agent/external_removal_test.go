@@ -2,35 +2,46 @@ package agent
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/silenceremember/sbp-panel/internal/config"
 )
 
-func TestExternalNetworkTuningRefusesPersistentConfiguration(t *testing.T) {
-	runs := 0
+func TestExternalNetworkTuningRemovesPersistentConfiguration(t *testing.T) {
+	settings := map[string]string{
+		"/proc/sys/net/ipv4/tcp_congestion_control":           "bbr",
+		"/proc/sys/net/ipv4/tcp_available_congestion_control": "cubic bbr",
+		"/proc/sys/net/core/default_qdisc":                    "fq",
+	}
+	var rewritten []string
 	ops := externalRemovalOps{
-		run: func(string, ...string) (string, error) {
-			runs++
+		run: func(_ string, args ...string) (string, error) {
+			key, value, _ := strings.Cut(args[1], "=")
+			paths := map[string]string{
+				"net.core.default_qdisc":          "/proc/sys/net/core/default_qdisc",
+				"net.ipv4.tcp_congestion_control": "/proc/sys/net/ipv4/tcp_congestion_control",
+			}
+			settings[paths[key]] = value
 			return "", nil
 		},
-		kernelSetting: func(path string) string {
-			if strings.HasSuffix(path, "tcp_congestion_control") {
-				return "bbr"
-			}
-			return ""
+		kernelSetting:     func(path string) string { return settings[path] },
+		tuningConfigFiles: func() ([]string, error) { return []string{"/etc/sysctl.conf"}, nil },
+		rewriteTuning: func(paths []string) (func() error, error) {
+			rewritten = append(rewritten, paths...)
+			return func() error { return nil }, nil
 		},
-		tuningConfigFiles: func() ([]string, error) { return []string{"/etc/sysctl.d/provider.conf"}, nil },
 	}
-	_, err := removeExternalNetworkTuning(ops)
-	if err == nil || !strings.Contains(err.Error(), "/etc/sysctl.d/provider.conf") {
-		t.Fatalf("persistent external tuning was not refused: %v", err)
+	if _, err := removeExternalNetworkTuning(ops); err != nil {
+		t.Fatal(err)
 	}
-	if runs != 0 {
-		t.Fatalf("sysctl changed despite persistent external configuration: %d calls", runs)
+	if !reflect.DeepEqual(rewritten, []string{"/etc/sysctl.conf"}) {
+		t.Fatalf("rewritten files = %#v", rewritten)
 	}
 }
 
@@ -48,6 +59,78 @@ func TestParseSysctlSetting(t *testing.T) {
 		if key != test.wantKey || value != test.wantValue {
 			t.Errorf("parseSysctlSetting(%q) = %q, %q; want %q, %q", test.line, key, value, test.wantKey, test.wantValue)
 		}
+	}
+}
+
+func TestRemoveExternalNetworkTuningLinesPreservesOtherContent(t *testing.T) {
+	original := []byte("# provider settings\r\nnet.core.default_qdisc = fq\r\nnet.ipv4.tcp_congestion_control bbr # enabled\r\nnet.ipv4.ip_forward=1\r\nnet.core.default_qdisc=fq_codel\r\n# net.ipv4.tcp_congestion_control=bbr\r\n")
+	want := []byte("# provider settings\r\nnet.ipv4.ip_forward=1\r\nnet.core.default_qdisc=fq_codel\r\n# net.ipv4.tcp_congestion_control=bbr\r\n")
+	got, changed := removeExternalNetworkTuningLines(original)
+	if !changed || !reflect.DeepEqual(got, want) {
+		t.Fatalf("changed=%v\ngot=%q\nwant=%q", changed, got, want)
+	}
+}
+
+func TestRewriteExternalNetworkTuningCanRollback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sysctl.conf")
+	original := []byte("net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\nnet.ipv4.ip_forward=1\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	rollback, err := rewriteExternalNetworkTuning([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(updated) != "net.ipv4.ip_forward=1\n" {
+		t.Fatalf("updated file = %q", updated)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %v", info.Mode().Perm())
+	}
+	if err := rollback(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(restored, original) {
+		t.Fatalf("restored file = %q", restored)
+	}
+}
+
+func TestFindExternalNetworkTuningFilesDeduplicatesSymlinks(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "sysctl.conf")
+	link := filepath.Join(directory, "99-sysctl.conf")
+	if err := os.WriteFile(target, []byte("net.ipv4.tcp_congestion_control=bbr\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	files, err := findExternalNetworkTuningFiles([]string{target, link})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(files, []string{resolved}) {
+		t.Fatalf("files = %#v, want %q", files, resolved)
 	}
 }
 
@@ -100,6 +183,7 @@ func TestExternalNetworkTuningRestoresBothSettingsAfterFailure(t *testing.T) {
 		"/proc/sys/net/core/default_qdisc":                    "fq",
 	}
 	failCC := true
+	filesRestored := false
 	ops := externalRemovalOps{
 		run: func(name string, args ...string) (string, error) {
 			key, value, _ := strings.Cut(args[1], "=")
@@ -115,13 +199,19 @@ func TestExternalNetworkTuningRestoresBothSettingsAfterFailure(t *testing.T) {
 			return "", nil
 		},
 		kernelSetting:     func(path string) string { return settings[path] },
-		tuningConfigFiles: func() ([]string, error) { return nil, nil },
+		tuningConfigFiles: func() ([]string, error) { return []string{"/etc/sysctl.conf"}, nil },
+		rewriteTuning: func([]string) (func() error, error) {
+			return func() error { filesRestored = true; return nil }, nil
+		},
 	}
 	if _, err := removeExternalNetworkTuning(ops); err == nil {
 		t.Fatal("expected external tuning reset failure")
 	}
 	if settings["/proc/sys/net/ipv4/tcp_congestion_control"] != "bbr" || settings["/proc/sys/net/core/default_qdisc"] != "fq" {
 		t.Fatalf("settings were not restored: %#v", settings)
+	}
+	if !filesRestored {
+		t.Fatal("persistent settings were not restored")
 	}
 }
 

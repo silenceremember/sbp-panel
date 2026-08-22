@@ -2,7 +2,6 @@ package agent
 
 import (
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -1244,6 +1243,7 @@ type externalRemovalOps struct {
 	dockerInventory   func() error
 	kernelSetting     func(string) string
 	tuningConfigFiles func() ([]string, error)
+	rewriteTuning     func([]string) (func() error, error)
 }
 
 func defaultExternalRemovalOps() externalRemovalOps {
@@ -1254,7 +1254,36 @@ func defaultExternalRemovalOps() externalRemovalOps {
 		dockerInventory:   requireEmptyDockerInventory,
 		kernelSetting:     kernelSetting,
 		tuningConfigFiles: externalNetworkTuningFiles,
+		rewriteTuning:     rewriteExternalNetworkTuning,
 	}
+}
+
+func readExternalConfig(path string) ([]byte, os.FileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		_ = file.Close()
+		return nil, nil, errors.New("file cannot be inspected safely")
+	}
+	body, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, nil, readErr
+	}
+	if closeErr != nil {
+		return nil, nil, closeErr
+	}
+	if len(body) > 1<<20 {
+		return nil, nil, errors.New("file grew beyond the inspection limit")
+	}
+	return body, info, nil
 }
 
 func externalNetworkTuningFiles() ([]string, error) {
@@ -1272,38 +1301,68 @@ func externalNetworkTuningFiles() ([]string, error) {
 		}
 		paths = append(paths, matches...)
 	}
+	result, err := findExternalNetworkTuningFiles(paths)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range result {
+		if !allowedExternalNetworkTuningTarget(path) {
+			return nil, fmt.Errorf("network tuning symlink resolves outside supported configuration paths: %q", path)
+		}
+	}
+	return result, nil
+}
+
+func allowedExternalNetworkTuningTarget(path string) bool {
+	path = filepath.Clean(path)
+	if path == "/etc/sysctl.conf" {
+		return true
+	}
+	if filepath.Ext(path) != ".conf" {
+		return false
+	}
+	for _, root := range []string{"/etc/sysctl.d", "/run/sysctl.d", "/usr/local/lib/sysctl.d", "/usr/lib/sysctl.d", "/lib/sysctl.d"} {
+		relative, err := filepath.Rel(root, path)
+		if err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative) {
+			return true
+		}
+	}
+	return false
+}
+
+func findExternalNetworkTuningFiles(paths []string) ([]string, error) {
 	conflicts := map[string]struct{}{}
 	for _, path := range paths {
-		file, err := os.Open(path)
+		resolved, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("inspect network tuning file %q: %w", path, err)
+			return nil, fmt.Errorf("resolve network tuning file %q: %w", path, err)
 		}
-		info, err := file.Stat()
+		resolved, err = filepath.Abs(resolved)
 		if err != nil {
-			_ = file.Close()
-			return nil, fmt.Errorf("inspect network tuning file %q: %w", path, err)
+			return nil, fmt.Errorf("resolve absolute network tuning file %q: %w", path, err)
 		}
-		if info.Size() > 1<<20 {
-			_ = file.Close()
-			return nil, fmt.Errorf("network tuning file %q is too large to inspect safely", path)
+		if _, seen := conflicts[resolved]; seen {
+			continue
 		}
-		scanner := bufio.NewScanner(io.LimitReader(file, 1<<20))
-		for scanner.Scan() {
-			key, value := parseSysctlSetting(scanner.Text())
-			if (key == "net.ipv4.tcp_congestion_control" && value == "bbr") || (key == "net.core.default_qdisc" && value == "fq") {
-				conflicts[path] = struct{}{}
+		body, _, err := readExternalConfig(resolved)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect network tuning file %q: %w", resolved, err)
+		}
+		matched := false
+		for _, line := range bytes.Split(body, []byte{'\n'}) {
+			key, value := parseSysctlSetting(string(line))
+			if isExternalNetworkTuningSetting(key, value) {
+				matched = true
 			}
 		}
-		scanErr := scanner.Err()
-		closeErr := file.Close()
-		if scanErr != nil {
-			return nil, fmt.Errorf("scan network tuning file %q: %w", path, scanErr)
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("close network tuning file %q: %w", path, closeErr)
+		if matched {
+			conflicts[resolved] = struct{}{}
 		}
 	}
 	result := make([]string, 0, len(conflicts))
@@ -1329,6 +1388,114 @@ func parseSysctlSetting(line string) (string, string) {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(key), "-")), strings.TrimSpace(value)
 }
 
+func isExternalNetworkTuningSetting(key, value string) bool {
+	return (key == "net.ipv4.tcp_congestion_control" && value == "bbr") ||
+		(key == "net.core.default_qdisc" && value == "fq")
+}
+
+func removeExternalNetworkTuningLines(body []byte) ([]byte, bool) {
+	result := make([]byte, 0, len(body))
+	changed := false
+	for len(body) > 0 {
+		end := bytes.IndexByte(body, '\n')
+		if end < 0 {
+			end = len(body)
+		} else {
+			end++
+		}
+		line := body[:end]
+		parsed := bytes.TrimSuffix(line, []byte{'\n'})
+		parsed = bytes.TrimSuffix(parsed, []byte{'\r'})
+		key, value := parseSysctlSetting(string(parsed))
+		if isExternalNetworkTuningSetting(key, value) {
+			changed = true
+		} else {
+			result = append(result, line...)
+		}
+		body = body[end:]
+	}
+	return result, changed
+}
+
+type tuningFileSnapshot struct {
+	path string
+	body []byte
+	info os.FileInfo
+}
+
+func rewriteExternalNetworkTuning(paths []string) (func() error, error) {
+	snapshots := make([]tuningFileSnapshot, 0, len(paths))
+	rollback := func() error {
+		var rollbackErrs []error
+		for index := len(snapshots) - 1; index >= 0; index-- {
+			snapshot := snapshots[index]
+			if err := replaceExternalConfig(snapshot.path, snapshot.body, snapshot.info); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore network tuning file %q: %w", snapshot.path, err))
+			}
+		}
+		return errors.Join(rollbackErrs...)
+	}
+	for _, path := range paths {
+		body, info, err := readExternalConfig(path)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("read network tuning file %q: %w", path, err), rollback())
+		}
+		updated, changed := removeExternalNetworkTuningLines(body)
+		if !changed {
+			continue
+		}
+		snapshot := tuningFileSnapshot{path: path, body: body, info: info}
+		snapshots = append(snapshots, snapshot)
+		if err := replaceExternalConfig(path, updated, info); err != nil {
+			return nil, errors.Join(fmt.Errorf("update network tuning file %q: %w", path, err), rollback())
+		}
+	}
+	return rollback, nil
+}
+
+func replaceExternalConfig(path string, body []byte, info os.FileInfo) (returnErr error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".sbp-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		if err := os.Remove(temporaryPath); err != nil && !os.IsNotExist(err) {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove temporary config %q: %w", temporaryPath, err))
+		}
+	}()
+	if _, err := temporary.Write(body); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := preserveFileOwner(temporaryPath, info); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	mode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	err = os.Rename(temporaryPath, path)
+	if err != nil && runtime.GOOS == "windows" {
+		if removeErr := os.Remove(path); removeErr == nil || os.IsNotExist(removeErr) {
+			err = os.Rename(temporaryPath, path)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return syncParentDirectory(path)
+}
+
 func removeExternalNetworkTuning(ops externalRemovalOps) (string, error) {
 	if ops.kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control") != "bbr" {
 		return "", errors.New("external BBR is no longer active")
@@ -1336,9 +1503,6 @@ func removeExternalNetworkTuning(ops externalRemovalOps) (string, error) {
 	conflicts, err := ops.tuningConfigFiles()
 	if err != nil {
 		return "", err
-	}
-	if len(conflicts) > 0 {
-		return "", fmt.Errorf("external BBR or fq is configured in %s; remove those settings manually first", strings.Join(conflicts, ", "))
 	}
 	available := strings.Fields(ops.kernelSetting("/proc/sys/net/ipv4/tcp_available_congestion_control"))
 	fallback := ""
@@ -1353,6 +1517,13 @@ func removeExternalNetworkTuning(ops externalRemovalOps) (string, error) {
 	}
 	previousCC := ops.kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control")
 	previousQdisc := ops.kernelSetting("/proc/sys/net/core/default_qdisc")
+	rollbackFiles := func() error { return nil }
+	if len(conflicts) > 0 {
+		rollbackFiles, err = ops.rewriteTuning(conflicts)
+		if err != nil {
+			return "", err
+		}
+	}
 	restore := func() error {
 		var restoreErrs []error
 		for _, setting := range [][2]string{
@@ -1367,15 +1538,15 @@ func removeExternalNetworkTuning(ops externalRemovalOps) (string, error) {
 	}
 	out, err := ops.run("sysctl", "-w", "net.core.default_qdisc=fq_codel")
 	if err != nil {
-		return out, fmt.Errorf("restore the default queue discipline: %w", err)
+		return out, errors.Join(fmt.Errorf("reset the default queue discipline: %w", err), restore(), rollbackFiles())
 	}
 	ccOut, err := ops.run("sysctl", "-w", "net.ipv4.tcp_congestion_control="+fallback)
 	out = strings.TrimSpace(strings.Join([]string{out, ccOut}, "\n"))
 	if err != nil {
-		return out, errors.Join(fmt.Errorf("disable external BBR: %w", err), restore())
+		return out, errors.Join(fmt.Errorf("disable external BBR: %w", err), restore(), rollbackFiles())
 	}
 	if ops.kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control") == "bbr" || ops.kernelSetting("/proc/sys/net/core/default_qdisc") != "fq_codel" {
-		return out, errors.Join(errors.New("external network tuning remained active after reset"), restore())
+		return out, errors.Join(errors.New("external network tuning remained active after reset"), restore(), rollbackFiles())
 	}
 	return out, nil
 }

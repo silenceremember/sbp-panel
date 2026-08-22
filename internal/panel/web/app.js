@@ -958,7 +958,7 @@ function externalRemovalDialog(component) {
   setDialogAction('Remove external', true);
   const warning = component.id === 'docker'
     ? 'SBP will remove an external Ubuntu docker.io package only if containers, images, volumes, and custom networks are all absent. External configuration and data directories are never deleted.'
-    : 'SBP will reset active BBR and fq only when no persistent external configuration enables them. External configuration files are never edited.';
+    : 'SBP will remove exact BBR and fq assignments from detected sysctl configuration files, preserve every other setting, and then reset the active kernel values.';
   body.innerHTML = `<p>${escapeHTML(warning)}</p><p class="muted">After removal, install the component again to make it fully managed by SBP.</p>`;
   dialog.showModal();
   document.querySelector('#dialog-form').onsubmit = async event => {
