@@ -35,7 +35,7 @@ func TestNewXrayXHTTPConfigIsIsolatedAndHardened(t *testing.T) {
 		t.Fatalf("XHTTP settings = %#v", xhttp)
 	}
 	reality := stream["realitySettings"].(map[string]any)
-	if reality["target"] != "www.cloudflare.com:443" || reality["dest"] != nil {
+	if reality["target"] != "www.googletagmanager.com:443" || reality["dest"] != nil {
 		t.Fatalf("REALITY target = %#v", reality)
 	}
 	if reality["limitFallbackUpload"] == nil || reality["limitFallbackDownload"] == nil {
@@ -46,10 +46,41 @@ func TestNewXrayXHTTPConfigIsIsolatedAndHardened(t *testing.T) {
 	}
 }
 
+func TestStableXrayUsesValidatedRealityTargetAndDefaultSNI(t *testing.T) {
+	root := newXrayConfigFor(stableXrayVariant, "private", "0123456789abcdef", "", nil)
+	inbound, _, err := managedXrayInbound(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := inbound["streamSettings"].(map[string]any)
+	reality := stream["realitySettings"].(map[string]any)
+	if reality["dest"] != "www.googletagmanager.com:443" || reality["target"] != nil {
+		t.Fatalf("REALITY target = %#v", reality)
+	}
+	serverNames := reality["serverNames"].([]string)
+	if len(serverNames) != 1 || serverNames[0] != "www.googletagmanager.com" {
+		t.Fatalf("REALITY server names = %#v", serverNames)
+	}
+
+	link, err := xrayCredentialLink(stableXrayVariant, "11111111-2222-4333-8444-555555555555", "Phone", xrayClientMetadata{
+		Server: "198.51.100.7", PublicKey: "public-key", ShortID: "0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Query().Get("sni"); got != "www.googletagmanager.com" {
+		t.Fatalf("default SNI = %q; link=%s", got, link)
+	}
+}
+
 func TestXrayXHTTPCredentialLink(t *testing.T) {
 	link, err := xrayCredentialLink(xhttpXrayVariant, "11111111-2222-4333-8444-555555555555", "Phone #1", xrayClientMetadata{
 		Server: "198.51.100.7", PublicKey: "public-key", ShortID: "0123456789abcdef",
-		SNI: "www.cloudflare.com", Path: "/secret_path-value",
+		SNI: "custom.example", Path: "/secret_path-value",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +94,7 @@ func TestXrayXHTTPCredentialLink(t *testing.T) {
 	}
 	query := parsed.Query()
 	for key, want := range map[string]string{
-		"encryption": "none", "security": "reality", "sni": "www.cloudflare.com",
+		"encryption": "none", "security": "reality", "sni": "custom.example",
 		"fp": "chrome", "pbk": "public-key", "sid": "0123456789abcdef",
 		"type": "xhttp", "path": "/secret_path-value",
 	} {

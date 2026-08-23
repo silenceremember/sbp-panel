@@ -1725,6 +1725,8 @@ func uninstallComponent(id string, c config.Config) (string, error) {
 }
 
 const xrayImage = "ghcr.io/xtls/xray-core@sha256:592ec4d11f656db95598d01e76dbcc6e002d67360b96a5436500a938230f52c7"
+const xrayRealityServerName = "www.googletagmanager.com"
+const xrayRealityTarget = xrayRealityServerName + ":443"
 const awgVersion = "3.1.20260814"
 const awgBaseImage = "amneziavpn/amneziawg-go:" + awgVersion + "@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a"
 const awgPort = 48692
@@ -1736,12 +1738,12 @@ func amneziaWGContainerArgs() []string {
 
 func newXrayConfigFor(variant xrayVariant, private, shortID, xhttpPath string, fallbackLimit map[string]any) map[string]any {
 	reality := map[string]any{
-		"show": false, "target": "www.cloudflare.com:443", "serverNames": []string{"www.cloudflare.com"},
+		"show": false, "target": xrayRealityTarget, "serverNames": []string{xrayRealityServerName},
 		"privateKey": private, "shortIds": []string{shortID},
 	}
 	if variant.Method == "xray" {
 		delete(reality, "target")
-		reality["dest"] = "www.cloudflare.com:443"
+		reality["dest"] = xrayRealityTarget
 	}
 	if fallbackLimit != nil {
 		reality["limitFallbackUpload"] = fallbackLimit
@@ -1902,7 +1904,7 @@ func installXrayVariant(variant xrayVariant) (string, error) {
 	}); err != nil {
 		return "", err
 	}
-	client := xrayClientMetadata{Server: publicServerAddress(), PublicKey: public, ShortID: shortID, SNI: "www.cloudflare.com", Path: xhttpPath}
+	client := xrayClientMetadata{Server: publicServerAddress(), PublicKey: public, ShortID: shortID, SNI: xrayRealityServerName, Path: xhttpPath}
 	cb, _ := json.MarshalIndent(client, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "server.json"), cb, 0600); err != nil {
 		return "", err

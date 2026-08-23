@@ -6,6 +6,64 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
+### Replace the SBP Xray REALITY target proven incompatible on the affected route
+
+Desired outcome: fresh SBP Xray TCP and XHTTP installations use a REALITY
+target that passes traffic on the affected VPS and client route without
+weakening container isolation, changing the pinned core, or altering runtime
+credential management.
+
+Constraints and acceptance criteria:
+
+- Change only the generated REALITY target, allowed server name, persisted SNI,
+  and their default metadata fallback.
+- Keep Xray 26.3.27, the ordinary Docker bridge, the unprivileged read-only
+  container profile, public-to-container port mapping, runtime API users, and
+  traffic accounting unchanged.
+- Both generated server variants and their VLESS links must use the same target
+  name.
+- A fresh TCP installation must pass small requests and sustained traffic from
+  v2rayN. XHTTP must receive the same target correction and retain its distinct
+  path, port, and runtime namespace.
+
+Implementation context:
+
+- REALITY configuration and persisted client metadata are generated in
+  `internal/agent/agent.go`.
+- VLESS links and legacy metadata fallback are generated in
+  `internal/agent/xray_variants.go`.
+- Regression coverage belongs with the existing Xray variant tests in
+  `internal/agent/xray_xhttp_test.go`.
+
+Progress:
+
+- [x] Reproduced the failure with the SBP-pinned Xray 26.3.27 image, an ordinary
+  Docker bridge, the exact SBP security profile, and the `443:8443` port map.
+  The same key, UUID, client, and container configuration passed traffic with
+  `www.googletagmanager.com` and failed when only the REALITY target and client
+  SNI changed to `www.cloudflare.com`.
+- [x] Replaced the generated target, persisted SNI, metadata fallback, and
+  allowed server name with `www.googletagmanager.com`. Added regression tests
+  for the TCP `dest`, XHTTP `target`, allowed server name, and default link SNI.
+- [x] Formatting, the complete Go test suite, shell lifecycle assertions, vet,
+  JavaScript syntax checks, and diff checks pass.
+- [ ] Validate a fresh SBP-generated profile on the affected server.
+
+Validation commands:
+
+```bash
+test -z "$(gofmt -l .)"
+go test ./...
+bash deploy/test_scripts.sh
+go vet ./...
+git diff --check
+```
+
+Recovery path: retain the last stable release and the working official Amnezia
+installation until a fresh SBP profile passes. If validation fails, remove only
+the exact SBP-owned test component and restore the official container; do not
+adopt or mutate Amnezia-owned state.
+
 ### Align SBP AmneziaWG with the working official Self-hosted installation
 
 Desired outcome: AmneziaWG installed by SBP works through the AmneziaVPN client

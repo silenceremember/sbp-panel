@@ -96,7 +96,7 @@ func xrayCredentialLink(variant xrayVariant, id, name string, metadata xrayClien
 		return "", errors.New("REALITY parameters were not found next to the Xray configuration")
 	}
 	if metadata.SNI == "" {
-		metadata.SNI = "www.cloudflare.com"
+		metadata.SNI = xrayRealityServerName
 	}
 	label := escapeVLESSComponent(name)
 	base := fmt.Sprintf("vless://%s@%s:%d?encryption=none", id, metadata.Server, variant.PublicPort)
