@@ -58,7 +58,7 @@ This example is from an earlier release, so some labels and versions may differ 
 | Docker | Ubuntu package | Isolated managed services |
 | [Xray](https://github.com/XTLS/Xray-core) | 26.3.27 | VLESS over TCP with REALITY and XTLS Vision |
 | [Xray](https://github.com/XTLS/Xray-core) XHTTP | 26.3.27 | VLESS over XHTTP with REALITY |
-| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | 3.1.20260814 | AmneziaWG server and device profiles |
+| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | 3.1.20260814 | AmneziaWG 2.0 server and device profiles |
 | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) | 0.3.8 | WB Stream, Telemost, DION, and VK Calls |
 
 SBP provides a management layer around these upstream projects; it does not create or own their protocols.

@@ -213,7 +213,7 @@ func TestUpdateAmneziaWGConfigRejectsInvalidCandidateBeforeMutation(t *testing.T
 
 func TestAmneziaWGClientParametersUseMetadataBeforeProvisioning(t *testing.T) {
 	dir := t.TempDir()
-	metadata := `{"server_public":"server-public","endpoint":"192.0.2.1:48692","shared":"Jc = 5\nH1 = 1001\n"}`
+	metadata := `{"server_public":"server-public","endpoint":"192.0.2.1:48692","shared":"Jc = 5\nJmin = 10\nJmax = 50\nS1 = 119\nS2 = 58\nS3 = 48\nS4 = 5\nH1 = 1001-1100\nH2 = 2001-2100\nH3 = 3001-3100\nH4 = 4001-4100\nI1 = <r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>\n"}`
 	if err := os.WriteFile(filepath.Join(dir, "server.json"), []byte(metadata), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestAmneziaWGClientParametersUseMetadataBeforeProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if public != "server-public" || endpoint != "192.0.2.1:48692" || !strings.Contains(shared, "Jc = 5") {
+	if public != "server-public" || endpoint != "192.0.2.1:48692" || !strings.Contains(shared, "S4 = 5") || !strings.Contains(shared, "H4 = 4001-4100") || !strings.Contains(shared, "I1 = "+amneziaWG2DefaultI1) {
 		t.Fatalf("parameters = %q, %q, %q", public, endpoint, shared)
 	}
 }
@@ -264,7 +264,7 @@ func TestPinnedAmneziaWGSyncConfChangesPeersWithoutRestart(t *testing.T) {
 	peerBPublic := dockerAmneziaWGTestCommand(t, peerBPrivate+"\n", "run", "--rm", "-i", "--entrypoint", "awg", awgBaseImage, "pubkey")
 	peerBPSK := dockerAmneziaWGTestCommand(t, "", "run", "--rm", "--entrypoint", "awg", awgBaseImage, "genpsk")
 
-	interfaceConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nListenPort = 48692\nJc = 5\nJmin = 50\nJmax = 1000\nS1 = 75\nS2 = 150\nH1 = 1001\nH2 = 1002\nH3 = 1003\nH4 = 1004\n", serverPrivate)
+	interfaceConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nListenPort = 48692\nJc = 5\nJmin = 10\nJmax = 50\nS1 = 119\nS2 = 58\nS3 = 48\nS4 = 5\nH1 = 1001-1100\nH2 = 2001-2100\nH3 = 3001-3100\nH4 = 4001-4100\n", serverPrivate)
 	peerAConfig := fmt.Sprintf("\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.8.1.2/32\n", peerAPublic, peerAPSK)
 	peerBConfig := fmt.Sprintf("\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.8.1.3/32\n", peerBPublic, peerBPSK)
 	dir := t.TempDir()

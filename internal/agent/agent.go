@@ -709,7 +709,7 @@ func componentStates(d Discovery, bbr bool) []Component {
 		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
-		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides a WireGuard-compatible encrypted tunnel using AmneziaWG transport parameters. Runs in an independently managed Docker container.", Note: awgNote},
+		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides an AmneziaWG 2.0 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
 		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated WB Stream connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: wbNote},
 		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated Yandex Telemost connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
 		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated DION connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: dionNote},
@@ -2022,15 +2022,11 @@ tail -f /dev/null
 	if err != nil {
 		return "", err
 	}
-	headers := make([]uint32, 4)
-	for n := range headers {
-		headers[n], err = randomUint32()
-		if err != nil {
-			return "", err
-		}
+	settings, err := newAmneziaWG2Settings()
+	if err != nil {
+		return "", fmt.Errorf("generate AmneziaWG 2.0 parameters: %w", err)
 	}
-	shared := fmt.Sprintf("Jc = 5\nJmin = 50\nJmax = 1000\nS1 = 75\nS2 = 150\nH1 = %d\nH2 = %d\nH3 = %d\nH4 = %d\n", headers[0], headers[1], headers[2], headers[3])
-	serverConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.8.1.1/24\nListenPort = %d\n%s", serverPrivate, awgPort, shared)
+	serverConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.8.1.1/24\nListenPort = %d\n%s", serverPrivate, awgPort, settings.server)
 	awgDir := filepath.Join(dir, "awg")
 	if err := os.MkdirAll(awgDir, 0700); err != nil {
 		return "", err
@@ -2041,7 +2037,7 @@ tail -f /dev/null
 	metadata, _ := json.MarshalIndent(map[string]string{
 		"server_public": strings.TrimSpace(serverPublic),
 		"endpoint":      fmt.Sprintf("%s:%d", publicServerAddress(), awgPort),
-		"shared":        shared,
+		"shared":        settings.client,
 	}, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "server.json"), metadata, 0600); err != nil {
 		return "", err
