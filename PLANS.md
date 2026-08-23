@@ -6,57 +6,6 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
-### Publish the observed fixes as v1.0.3 prerelease
-
-Desired outcome: publish a GitHub prerelease whose clean-install bundle contains
-the proven REALITY target correction and the official-style AmneziaWG 2.0
-profile generation for fresh-server validation.
-
-Constraints and acceptance criteria:
-
-- Source version, release commit, and immutable tag must all be `1.0.3` /
-  `v1.0.3`, with `Prerelease = true`.
-- Run the complete applicable validation suite from a clean intended diff before
-  tagging.
-- The release archive must remain the workflow allowlist and GitHub must report
-  the release as a prerelease, not as `/releases/latest`.
-- Do not promote the prerelease until fresh Xray TCP, XHTTP, and AmneziaWG tests
-  on the affected server pass.
-
-Implementation context:
-
-- Version and release category are in `internal/buildinfo/buildinfo.go`.
-- `.github/workflows/release.yml` builds, checks, and publishes the archive on a
-  matching tag.
-- The intended functional commits are `a684b43` and `d533660`.
-
-Progress:
-
-- [x] Confirmed the working tree is clean, `v1.0.3` does not exist, and GitHub
-  CLI authentication can push and inspect the release workflow.
-- [x] Bumped the source version to 1.0.3 while retaining prerelease status.
-- [x] Formatting, the complete Go test suite, shell lifecycle assertions, vet,
-  JavaScript syntax checks, and diff checks pass. The release workflow and
-  archive allowlist were reviewed together with the version source.
-- [ ] Commit, push `main`, create and push `v1.0.3`, then verify the GitHub
-  Actions result and published release category/assets.
-
-Validation commands:
-
-```bash
-test -z "$(gofmt -l .)"
-go test ./...
-bash deploy/test_scripts.sh
-go vet ./...
-node --check internal/panel/web/app.js
-node --check internal/panel/web/check.js
-git diff --check
-```
-
-Recovery path: before the tag is pushed, correct the release commit instead of
-publishing. After the immutable tag is pushed, never move or reuse it; publish a
-newer patch version for any fix. Keep v1.0.2 available throughout validation.
-
 ### Replace the SBP Xray REALITY target proven incompatible on the affected route
 
 Desired outcome: fresh SBP Xray TCP and XHTTP installations use a REALITY
