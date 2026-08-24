@@ -163,7 +163,7 @@ func TestDashboardClientLinksArePinnedAndProviderCredentialsMovedToSettings(t *t
 	body := response.Body.String()
 	for _, expected := range []string{
 		"AmneziaVPN_4.8.21.0_windows_x64.exe",
-		"v2rayN-windows-64-desktop.zip",
+		"releases/download/7.20.4/v2rayN-windows-64-desktop.zip",
 		"v2rayNG_2.2.6_arm64-v8a.apk",
 		"WhitelistBypass.Joiner-0.3.8-x64.exe",
 	} {

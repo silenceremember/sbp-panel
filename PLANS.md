@@ -6,6 +6,56 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
+### Release SBP 1.1.4 with the validated v2rayN recommendation
+
+Desired outcome: publish a stable SBP 1.1.4 release whose Client apps dialog
+and README recommend v2rayN 7.20.4 and link to its exact official release and
+Windows desktop archive.
+
+Constraints and acceptance criteria:
+
+- Change only the client recommendation, its regression assertion, user-facing
+  documentation, and the SBP patch version.
+- Keep the existing server components, protocols, generated profiles, and
+  lifecycle behavior unchanged.
+- Use the verified official v2rayN 7.20.4 release and exact
+  `v2rayN-windows-64-desktop.zip` asset URLs.
+- Publish a new immutable `v1.1.4` tag only after the full release checks pass;
+  verify the GitHub Actions result and the release archive allowlist.
+
+Implementation context:
+
+- Client links are embedded in `internal/panel/web/index.html` and asserted in
+  `internal/panel/panel_test.go`.
+- The public recommendation is in `README.md`.
+- Release version and category are in `internal/buildinfo/buildinfo.go`.
+
+Progress:
+
+- [x] Replace v2rayN 7.24.6 with the verified stable 7.20.4 release and direct
+  Windows desktop download in the panel and README.
+- [x] Update the exact embedded-client-link regression assertion.
+- [x] Bump SBP to stable 1.1.4. Formatting, all Go tests, deploy lifecycle
+  assertions, vet, both JavaScript syntax checks, and diff checks pass.
+- [ ] Commit, push the matching `v1.1.4` tag, verify GitHub Actions, and inspect
+  the published archive contents.
+
+Validation commands:
+
+```bash
+test -z "$(gofmt -l .)"
+go test ./...
+bash deploy/test_scripts.sh
+go vet ./...
+node --check internal/panel/web/app.js
+node --check internal/panel/web/check.js
+git diff --check
+```
+
+Recovery path: do not tag or publish if any local check fails. Once published,
+never move or reuse `v1.1.4`; publish a newer patch for any correction. Existing
+stable releases remain available as rollback artifacts.
+
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action

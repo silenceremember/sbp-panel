@@ -114,7 +114,7 @@ Profiles use the readable name `SBP · Group name · Device name`. Routing integ
 
 | Profile type | Suggested client |
 |---|---|
-| Xray TCP or XHTTP | [v2rayN](https://github.com/2dust/v2rayN) for Windows; [v2rayNG](https://github.com/2dust/v2rayNG) for Android |
+| Xray TCP or XHTTP | [v2rayN 7.20.4](https://github.com/2dust/v2rayN/releases/tag/7.20.4) for Windows; [v2rayNG](https://github.com/2dust/v2rayNG) for Android |
 | AmneziaWG | [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client) |
 | Routing integrations | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) |
 
