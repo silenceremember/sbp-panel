@@ -6,37 +6,6 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
-### Publish the component settings feature as stable v1.1.0
-
-Desired outcome: publish the complete component-settings feature as GitHub
-Release `v1.1.0`, categorized as stable and latest, with the source version,
-tag, generated update metadata, release archive, and documentation aligned.
-
-Constraints and acceptance criteria:
-
-- Preserve all ownership, rollback, authentication, CSRF, component-isolation,
-  and release archive allowlist invariants.
-- The intended diff contains only component settings, lifecycle/UI polish,
-  documentation, tests, and the `1.1.0` stable version change.
-- Run formatting, all Go tests, vet, JavaScript syntax checks, deploy assertions,
-  a Linux amd64 CGO-disabled build, diff checks, and a production-data scan.
-- Commit the exact checked diff, create the unused matching `v1.1.0` tag, push
-  the commit and tag, then verify the tagged GitHub Actions workflow and the
-  stable/latest release assets before declaring completion.
-
-Progress:
-
-- [x] Implement and test the intended feature diff.
-- [x] Set `Version = "1.1.0"` and `Prerelease = false`; verify that `v1.1.0`
-  does not exist locally or remotely.
-- [x] Complete all local release checks and build the Linux amd64 binary.
-- [ ] Commit, tag, push, and verify GitHub Actions plus the published release.
-
-Recovery path: do not reuse or move a release tag. If a failure occurs before
-the tag is pushed, fix the source and create the tag only after checks pass. If
-the pushed tag workflow fails, leave the failed tag/release evidence intact,
-publish a newer numeric fix, and do not silently replace `v1.1.0`.
-
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action
