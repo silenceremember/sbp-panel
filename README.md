@@ -82,7 +82,7 @@ SBP provides a management layer around these upstream projects; it does not crea
 
 A clean server is recommended. Existing VPN software, containers, occupied ports, and custom networking are treated as external and are not adopted by SBP.
 
-## Install
+## Install in one command
 
 Connect to the server over SSH and run:
 
@@ -102,7 +102,7 @@ https://YOUR_SERVER_IP:9443
 | Password | The password entered during installation |
 | Certificate | Self-signed by default; the browser shows a warning on the first visit |
 
-## First setup
+## First steps
 
 1. Open **Components** and review **Settings** for the components you plan to use. Settings are global desired server configuration and remain available before and after installation.
 2. Install Network tuning, Docker, and the VPN methods you need. Upload the authorized cookie JSON from **Settings** for each required routing component.
