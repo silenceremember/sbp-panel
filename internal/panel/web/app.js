@@ -1127,8 +1127,7 @@ function xrayRealitySNIDialog(component) {
   const body = document.querySelector('#dialog-body');
   const form = document.querySelector('#dialog-form');
   document.querySelector('#dialog-title').textContent = `${component.name} settings`;
-  const save = setDialogAction('Save');
-  save.formNoValidate = true;
+  setDialogAction('Save');
 
   const renderSettings = settings => {
     if (generation !== dialogGeneration) return;
@@ -1138,58 +1137,33 @@ function xrayRealitySNIDialog(component) {
     const targetHost = separator > 0 ? target.slice(0, separator) : target;
     const targetPort = separator > 0 ? target.slice(separator + 1) : '443';
     const names = Array.isArray(settings?.server_names) ? settings.server_names : [];
-    const list = names.map(name => {
-      const isDefault = name === defaultSNI;
-      return `<li><span><code>${escapeHTML(name)}</code>${isDefault ? '<small>Default</small>' : ''}</span>${isDefault ? '' : buttonHTML('Remove', 'danger', `type="button" data-remove-sni="${escapeHTML(name)}"`)}</li>`;
-    }).join('');
+    const additionalNames = names.filter(name => name !== defaultSNI).join('\n');
     body.innerHTML = `
       <p class="settings-notice">${escapeHTML(GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
       <p class="muted">The default SNI remains in all generated profiles. Additional values become valid server-side choices for profiles edited manually in the client.</p>
-      <label>REALITY target<div class="settings-inline-control"><input data-reality-target-host type="text" maxlength="253" value="${escapeHTML(targetHost)}" placeholder="www.googletagmanager.com" autocomplete="off" required><input data-reality-target-port class="settings-port-input" type="number" min="1" max="65535" value="${escapeHTML(targetPort)}" aria-label="REALITY target port" required><button type="button" class="button-secondary" data-save-reality-target>Save target</button></div><small class="settings-warning">Hostname and TLS port are separate here. SBP probes the resulting endpoint before applying it to an installed component, or during a later installation. Already imported profiles are not rewritten.</small></label>
-      <ul class="sni-list">${list}</ul>
-      <label>Add SNI<div class="settings-inline-control"><input id="xray-reality-sni" type="text" maxlength="253" placeholder="dl.google.com" autocomplete="off" required><button type="submit" data-add-reality-sni>Add SNI</button></div><small class="muted">Enter a hostname only. If installed, the selected Xray container briefly reconnects after a validated change. Otherwise the value is saved for installation.</small></label>`;
-    for (const remove of body.querySelectorAll('[data-remove-sni]')) {
-      remove.onclick = async () => {
-        const sni = remove.dataset.removeSni;
-        if (!confirm(`Remove “${sni}” from the allowed SNI list? Profiles manually using it will stop connecting.`)) return;
-        try {
-          await runPendingAction(`component:${component.id}:sni`, remove, 'Removing…', async () => {
-            const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'DELETE', body: {sni}});
-            renderSettings(result.settings);
-            notify(`SNI “${sni}” removed.`, 'success');
-          });
-        } catch (error) { notifyError(error); }
-      };
-    }
-    body.querySelector('[data-save-reality-target]').onclick = async event => {
-      const hostInput = body.querySelector('[data-reality-target-host]');
-      const portInput = body.querySelector('[data-reality-target-port]');
-      if (!hostInput?.reportValidity() || !portInput?.reportValidity()) return;
-      const value = `${hostInput.value.trim()}:${portInput.value.trim()}`;
-      if (!confirm(`Change the REALITY target for “${component.name}” to “${value}”? Existing client profiles will not be rewritten.`)) return;
-      try {
-        await runPendingAction(`component:${component.id}:target`, event.currentTarget, 'Checking…', async () => {
-          const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'PUT', body: {target: value}});
-          renderSettings(result.settings);
-          notify(`REALITY target changed to “${result.settings.target}”.`, 'success');
-        });
-      } catch (error) { notifyError(error); }
-    };
+      <label>REALITY target<div class="settings-inline-control"><input data-reality-target-host type="text" maxlength="253" value="${escapeHTML(targetHost)}" placeholder="www.googletagmanager.com" aria-label="REALITY target hostname" autocomplete="off" required><input data-reality-target-port class="settings-port-input" type="text" inputmode="numeric" pattern="[0-9]{1,5}" maxlength="5" value="${escapeHTML(targetPort)}" aria-label="REALITY target port" required></div><small class="settings-warning">SBP probes this TLS endpoint before applying it to an installed component, or during a later installation. Already imported profiles are not rewritten.</small></label>
+      <label>Default SNI<input data-reality-default-sni type="text" value="${escapeHTML(defaultSNI)}" readonly><small class="muted">The default profile SNI is immutable.</small></label>
+      <label>Additional SNI values<textarea data-reality-additional-sni rows="6" maxlength="8192" spellcheck="false" autocomplete="off" placeholder="dl.google.com&#10;example.com">${escapeHTML(additionalNames)}</textarea><small class="muted">Optional. Enter one complete hostname per line. Saving replaces the complete additional-SNI list.</small></label>`;
   };
 
   form.onsubmit = async event => {
-    if (event.submitter?.value === 'cancel' || event.submitter?.id === 'dialog-ok') return;
+    if (event.submitter?.value === 'cancel') return;
     event.preventDefault();
-    if (!event.submitter?.matches('[data-add-reality-sni]')) return;
-    const input = body.querySelector('#xray-reality-sni');
-    if (!input?.reportValidity()) return;
+    const hostInput = body.querySelector('[data-reality-target-host]');
+    const portInput = body.querySelector('[data-reality-target-port]');
+    const additionalInput = body.querySelector('[data-reality-additional-sni]');
+    if (!hostInput?.reportValidity() || !portInput?.reportValidity() || !additionalInput) return;
+    const target = `${hostInput.value.trim()}:${portInput.value.trim()}`;
+    const serverNames = [
+      String(body.querySelector('[data-reality-default-sni]')?.value || '').trim(),
+      ...additionalInput.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+    ];
     const submit = event.submitter || document.querySelector('#dialog-ok');
-    const sni = input.value.trim();
     try {
-      await runPendingAction(`component:${component.id}:sni`, submit, 'Adding…', async () => {
-        const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'POST', body: {sni}});
-        renderSettings(result.settings);
-        notify(`SNI “${sni}” is allowed for ${component.name}.`, 'success');
+      await runPendingAction(`component:${component.id}:reality`, submit, 'Saving…', async () => {
+        const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'PUT', body: {target, server_names: serverNames}});
+        if (generation === dialogGeneration && dialog.open) dialog.close();
+        notify(`${component.name} REALITY settings saved as ${result.settings.target}.`, 'success');
       });
     } catch (error) { notifyError(error); }
   };
@@ -1238,11 +1212,11 @@ function componentTextSettingsDialog(component) {
     const submit = event.submitter || document.querySelector('#dialog-ok');
     try {
       await runPendingAction(`component:${component.id}:settings`, submit, 'Saving…', async () => {
-        const result = await api(`/api/components/${component.id}/settings`, {method: 'PUT', body: {content: editor.value}});
-        render(result.settings);
+        await api(`/api/components/${component.id}/settings`, {method: 'PUT', body: {content: editor.value}});
         const message = !component.installed
           ? `${component.name} settings saved for installation.`
           : component.id === 'tweaks' ? `${component.name} settings saved and reapplied.` : `${component.name} settings saved.`;
+        if (generation === dialogGeneration && dialog.open) dialog.close();
         notify(message, 'success');
       });
     } catch (error) { notifyError(error); }

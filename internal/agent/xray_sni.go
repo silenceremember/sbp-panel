@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const maxXrayRealityServerNames = 32
+const (
+	maxXrayRealityServerNames         = 32
+	maxXrayRealitySettingsRequestSize = 16 << 10
+)
 
 type xrayRealitySNIState struct {
 	DefaultSNI  string   `json:"default_sni"`
@@ -33,18 +36,19 @@ type xrayRealitySNIOps struct {
 	captureTraffic   func()
 }
 
-func decodeXrayRealityTargetRequest(reader io.Reader) (string, error) {
-	body, err := io.ReadAll(io.LimitReader(reader, 4<<10+1))
-	if err != nil || len(body) == 0 || len(body) > 4<<10 {
-		return "", errors.New("invalid REALITY target request size")
+func decodeXrayRealitySettingsRequest(reader io.Reader) (string, []string, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maxXrayRealitySettingsRequestSize+1))
+	if err != nil || len(body) == 0 || len(body) > maxXrayRealitySettingsRequestSize {
+		return "", nil, errors.New("invalid REALITY settings request size")
 	}
 	var input struct {
-		Target string `json:"target"`
+		Target      string   `json:"target"`
+		ServerNames []string `json:"server_names"`
 	}
 	if err := json.Unmarshal(body, &input); err != nil {
-		return "", errors.New("invalid REALITY target request")
+		return "", nil, errors.New("invalid REALITY settings request")
 	}
-	return input.Target, nil
+	return input.Target, input.ServerNames, nil
 }
 
 func decodeXrayRealitySNIRequest(reader io.Reader) (string, error) {
@@ -346,6 +350,70 @@ func removeXrayRealitySNI(variant xrayVariant, value string) (xrayRealitySNIStat
 
 func setXrayRealityTarget(variant xrayVariant, value string) (xrayRealitySNIState, error) {
 	return mutateXrayRealityTarget(variant, value, defaultXrayRealitySNIOps())
+}
+
+func replaceXrayRealitySettings(variant xrayVariant, target string, serverNames []string) (xrayRealitySNIState, error) {
+	return mutateXrayRealitySettings(variant, target, serverNames, defaultXrayRealitySNIOps())
+}
+
+func normalizeRequestedXrayRealitySettings(target string, serverNames []string) (xrayRealitySNIState, error) {
+	normalizedTarget, err := normalizeXrayRealityTarget(target)
+	if err != nil {
+		return xrayRealitySNIState{}, err
+	}
+	normalizedNames, err := xrayRealityServerNames(serverNames)
+	if err != nil {
+		return xrayRealitySNIState{}, err
+	}
+	foundDefault := false
+	for _, name := range normalizedNames {
+		foundDefault = foundDefault || name == xrayRealityServerName
+	}
+	if !foundDefault {
+		return xrayRealitySNIState{}, errors.New("the immutable default SNI must remain in serverNames")
+	}
+	next := orderedXrayRealitySNIState(xrayRealityServerName, normalizedNames)
+	next.Target = normalizedTarget
+	return next, nil
+}
+
+func mutateXrayRealitySettings(variant xrayVariant, target string, serverNames []string, ops xrayRealitySNIOps) (xrayRealitySNIState, error) {
+	xrayConfigMutationMu.Lock()
+	defer xrayConfigMutationMu.Unlock()
+
+	next, err := normalizeRequestedXrayRealitySettings(target, serverNames)
+	if err != nil {
+		return xrayRealitySNIState{}, err
+	}
+	if !ops.owned(variant.Method) {
+		previous, _, err := loadDesiredXrayRealitySNIState(variant.Method)
+		if err != nil {
+			return xrayRealitySNIState{}, err
+		}
+		if reflect.DeepEqual(previous, next) {
+			return previous, nil
+		}
+		if err := saveDesiredXrayRealitySNIState(variant.Method, next); err != nil {
+			return xrayRealitySNIState{}, err
+		}
+		return next, nil
+	}
+	if err := ops.verifyContainer(variant); err != nil {
+		return xrayRealitySNIState{}, err
+	}
+	root, previousBody, previous, err := readXrayRealitySNIState(variant)
+	if err != nil {
+		return xrayRealitySNIState{}, err
+	}
+	if reflect.DeepEqual(previous, next) {
+		return previous, nil
+	}
+	if previous.Target != next.Target {
+		if err := ops.validateTarget(next.Target); err != nil {
+			return xrayRealitySNIState{}, err
+		}
+	}
+	return applyXrayRealitySettings(variant, root, previousBody, previous, next, ops)
 }
 
 func mutateXrayRealityTarget(variant xrayVariant, value string, ops xrayRealitySNIOps) (xrayRealitySNIState, error) {

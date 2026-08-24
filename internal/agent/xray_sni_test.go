@@ -100,14 +100,78 @@ func TestDecodeXrayRealitySNIRequestIsBoundedAndExact(t *testing.T) {
 	}
 }
 
-func TestDecodeXrayRealityTargetRequestIsBoundedAndExact(t *testing.T) {
-	if got, err := decodeXrayRealityTargetRequest(strings.NewReader(`{"target":"dl.google.com:443"}`)); err != nil || got != "dl.google.com:443" {
-		t.Fatalf("decoded target=%q err=%v", got, err)
+func TestDecodeXrayRealitySettingsRequestIsBoundedAndComplete(t *testing.T) {
+	target, names, err := decodeXrayRealitySettingsRequest(strings.NewReader(`{"target":"dl.google.com:443","server_names":["www.googletagmanager.com","dl.google.com"]}`))
+	if err != nil || target != "dl.google.com:443" || !reflect.DeepEqual(names, []string{xrayRealityServerName, "dl.google.com"}) {
+		t.Fatalf("decoded target=%q names=%#v err=%v", target, names, err)
 	}
-	for _, body := range []string{"", `{"target":`, strings.Repeat("x", 4<<10+1)} {
-		if _, err := decodeXrayRealityTargetRequest(strings.NewReader(body)); err == nil {
-			t.Fatalf("invalid target request with %d bytes was accepted", len(body))
+	for _, body := range []string{"", `{"target":`, strings.Repeat("x", maxXrayRealitySettingsRequestSize+1)} {
+		if _, _, err := decodeXrayRealitySettingsRequest(strings.NewReader(body)); err == nil {
+			t.Fatalf("invalid settings request with %d bytes was accepted", len(body))
 		}
+	}
+}
+
+func TestReplaceXrayRealitySettingsAppliesTargetAndListOnce(t *testing.T) {
+	variant, _ := testXraySNIVariant(t, xhttpXrayVariant)
+	validatedTarget := ""
+	validatedConfigs := 0
+	restarts := 0
+	ops := testXraySNIOps(func(string) error { validatedConfigs++; return nil }, func(xrayVariant, map[string]any) error { restarts++; return nil })
+	ops.validateTarget = func(target string) error { validatedTarget = target; return nil }
+
+	state, err := mutateXrayRealitySettings(variant, "DL.Google.COM:8443", []string{"dl.google.com", xrayRealityServerName}, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantNames := []string{xrayRealityServerName, "dl.google.com"}
+	if state.Target != "dl.google.com:8443" || !reflect.DeepEqual(state.ServerNames, wantNames) {
+		t.Fatalf("replacement state=%#v", state)
+	}
+	if validatedTarget != state.Target || validatedConfigs != 1 || restarts != 1 {
+		t.Fatalf("target=%q config validations=%d restarts=%d", validatedTarget, validatedConfigs, restarts)
+	}
+	_, _, stored, err := readXrayRealitySNIState(variant)
+	if err != nil || !reflect.DeepEqual(stored, state) {
+		t.Fatalf("stored replacement=%#v err=%v", stored, err)
+	}
+}
+
+func TestReplaceXrayRealitySettingsRequiresImmutableDefault(t *testing.T) {
+	variant, before := testXraySNIVariant(t, stableXrayVariant)
+	ops := testXraySNIOps(func(string) error { t.Fatal("invalid replacement was staged"); return nil }, func(xrayVariant, map[string]any) error {
+		t.Fatal("invalid replacement restarted Xray")
+		return nil
+	})
+	if _, err := mutateXrayRealitySettings(variant, "dl.google.com:443", []string{"dl.google.com"}, ops); err == nil || !strings.Contains(err.Error(), "immutable default") {
+		t.Fatalf("missing-default error=%v", err)
+	}
+	after, _ := os.ReadFile(variant.ConfigFile)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("invalid replacement changed the configuration")
+	}
+}
+
+func TestReplaceXrayRealitySettingsSavesDesiredStateBeforeInstall(t *testing.T) {
+	variant, before := testXraySNIVariant(t, stableXrayVariant)
+	originalSettingsDir := componentSettingsDir
+	componentSettingsDir = filepath.Join(t.TempDir(), "settings")
+	t.Cleanup(func() { componentSettingsDir = originalSettingsDir })
+	ops := testXraySNIOps(func(string) error { return nil }, func(xrayVariant, map[string]any) error { return nil })
+	ops.owned = func(string) bool { return false }
+	ops.verifyContainer = func(xrayVariant) error { t.Fatal("unowned container was inspected for replacement"); return nil }
+
+	want, err := mutateXrayRealitySettings(variant, "dl.google.com:8443", []string{xrayRealityServerName, "dl.google.com"}, ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := loadDesiredXrayRealitySNIState(variant.Method)
+	if err != nil || !reflect.DeepEqual(saved, want) {
+		t.Fatalf("saved desired replacement=%#v want=%#v err=%v", saved, want, err)
+	}
+	after, _ := os.ReadFile(variant.ConfigFile)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("unowned replacement changed the managed configuration")
 	}
 }
 

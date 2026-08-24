@@ -3147,7 +3147,7 @@ func Run(configPath string) error {
 			writeError(w, http.StatusBadRequest, errors.New("REALITY settings are available only for Xray components"))
 			return
 		}
-		target, err := decodeXrayRealityTargetRequest(r.Body)
+		target, serverNames, err := decodeXrayRealitySettingsRequest(r.Body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -3158,7 +3158,7 @@ func Run(configPath string) error {
 			return
 		}
 		defer releaseLifecycle(owner)
-		state, err := setXrayRealityTarget(variant, target)
+		state, err := replaceXrayRealitySettings(variant, target, serverNames)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

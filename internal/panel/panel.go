@@ -1328,8 +1328,8 @@ func (s *server) xrayRealitySNI(w http.ResponseWriter, r *http.Request) {
 	var body []byte
 	if r.Method != http.MethodGet {
 		var err error
-		body, err = io.ReadAll(io.LimitReader(r.Body, 4<<10+1))
-		if err != nil || len(body) == 0 || len(body) > 4<<10 {
+		body, err = io.ReadAll(io.LimitReader(r.Body, 16<<10+1))
+		if err != nil || len(body) == 0 || len(body) > 16<<10 {
 			fail(w, http.StatusBadRequest, errors.New("invalid REALITY settings request size"))
 			return
 		}

@@ -197,8 +197,8 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"readOnlyComponentSettingsDialog(component)",
 		"data-reality-target-host",
 		"data-reality-target-port",
-		"data-add-reality-sni",
-		"save.formNoValidate = true",
+		"data-reality-additional-sni",
+		"server_names: serverNames",
 		"dialog.append(notifications)",
 		"const settingsAction = buttonHTML('Settings'",
 		"/api/components/${component.id}/settings",
@@ -209,6 +209,14 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(javascript), "recommended") {
 		t.Fatal("dashboard JavaScript still contains a recommended badge")
+	}
+	for _, removed := range []string{"data-save-reality-target", "data-add-reality-sni"} {
+		if strings.Contains(javascript, removed) {
+			t.Fatalf("dashboard JavaScript still contains obsolete per-field action %q", removed)
+		}
+	}
+	if !strings.Contains(javascript, `data-reality-target-port class="settings-port-input" type="text" inputmode="numeric"`) || strings.Contains(javascript, `data-reality-target-port class="settings-port-input" type="number"`) {
+		t.Fatal("REALITY target port does not use the spinner-free numeric text control")
 	}
 	stylesheet := readAsset("/app.css")
 	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "scrollbar-gutter: stable"} {
@@ -233,11 +241,11 @@ func TestXrayRealitySNIForwardingIsVariantScopedAndBounded(t *testing.T) {
 	}{
 		{name: "read stable", method: http.MethodGet, id: "xray", wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "add xhttp", method: http.MethodPost, id: "xray-xhttp", body: `{"sni":"dl.google.com"}`, wantStatus: http.StatusOK, wantCalls: 1},
-		{name: "change target", method: http.MethodPut, id: "xray", body: `{"target":"dl.google.com:443"}`, wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "replace reality settings", method: http.MethodPut, id: "xray", body: `{"target":"dl.google.com:443","server_names":["www.googletagmanager.com","dl.google.com"]}`, wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "remove stable", method: http.MethodDelete, id: "xray", body: `{"sni":"dl.google.com"}`, wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "unsupported component", method: http.MethodGet, id: "amneziawg", wantStatus: http.StatusBadRequest},
 		{name: "empty mutation", method: http.MethodPost, id: "xray", wantStatus: http.StatusBadRequest},
-		{name: "oversized mutation", method: http.MethodPost, id: "xray", body: strings.Repeat("x", 4<<10+1), wantStatus: http.StatusBadRequest},
+		{name: "oversized mutation", method: http.MethodPut, id: "xray", body: strings.Repeat("x", 16<<10+1), wantStatus: http.StatusBadRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
