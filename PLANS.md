@@ -6,6 +6,221 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
+### Publish the component settings feature as stable v1.1.0
+
+Desired outcome: publish the complete component-settings feature as GitHub
+Release `v1.1.0`, categorized as stable and latest, with the source version,
+tag, generated update metadata, release archive, and documentation aligned.
+
+Constraints and acceptance criteria:
+
+- Preserve all ownership, rollback, authentication, CSRF, component-isolation,
+  and release archive allowlist invariants.
+- The intended diff contains only component settings, lifecycle/UI polish,
+  documentation, tests, and the `1.1.0` stable version change.
+- Run formatting, all Go tests, vet, JavaScript syntax checks, deploy assertions,
+  a Linux amd64 CGO-disabled build, diff checks, and a production-data scan.
+- Commit the exact checked diff, create the unused matching `v1.1.0` tag, push
+  the commit and tag, then verify the tagged GitHub Actions workflow and the
+  stable/latest release assets before declaring completion.
+
+Progress:
+
+- [x] Implement and test the intended feature diff.
+- [x] Set `Version = "1.1.0"` and `Prerelease = false`; verify that `v1.1.0`
+  does not exist locally or remotely.
+- [x] Complete all local release checks and build the Linux amd64 binary.
+- [ ] Commit, tag, push, and verify GitHub Actions plus the published release.
+
+Recovery path: do not reuse or move a release tag. If a failure occurs before
+the tag is pushed, fix the source and create the tag only after checks pass. If
+the pushed tag workflow fails, leave the failed tag/release evidence intact,
+publish a newer numeric fix, and do not silently replace `v1.1.0`.
+
+### Make component settings persistent and available before installation
+
+Desired outcome: every component row exposes a consistent Settings action
+before and after installation. Network tuning is shown without a synthetic
+version and has an editable, line-oriented allowlisted configuration. AmneziaWG
+has its own validated configuration. Saved values are persistent desired state,
+are consumed by later installs, and are reapplied safely when the corresponding
+SBP-owned component is already installed.
+
+Constraints and acceptance criteria:
+
+- Rename the component to `Network tuning` and omit its version in discovery,
+  the dashboard, and user-facing documentation.
+- Never expose an arbitrary root shell. The tuning editor may display a
+  shell-like line-oriented payload, but it accepts only documented SBP-owned
+  keys and validated values. Unknown commands, substitutions, redirects, and
+  duplicate keys fail closed.
+- Treat omitted editable lines as an explicit request for the documented
+  default. Save desired settings atomically in an SBP-owned, size-bounded file
+  with a defined cleanup path.
+- If Network tuning is installed, Save must atomically replace the owned
+  persistent payload, reapply all effective settings, verify the kernel state,
+  and restore the previous payload and runtime values if application fails.
+- AmneziaWG settings must validate cross-field AWG constraints. Never silently
+  invalidate issued device profiles: refuse profile-affecting changes while
+  peers exist, and apply a safe change only to a proven SBP-owned installation
+  with staged configuration, runtime verification, and rollback.
+- Component uninstall removes runtime resources but preserves desired settings
+  for a later reinstall. Full product cleanup removes the settings directory;
+  panel-only uninstall keeps managed state as required.
+- Settings remains visible for external and uninstalled components. External
+  resources are never mutated. Components without editable values show an
+  explanatory read-only view rather than a dead control.
+- Use the shared dialog, pending-action, notification, lifecycle lock, scroll
+  preservation, and responsive action layout already present in the dashboard.
+  Explain once in every Settings dialog that component settings are global
+  desired configuration and remain relevant independently of install state.
+- Existing Xray SNI and routing-cookie settings remain isolated by component.
+  Extend Xray desired SNI storage only as needed to make the existing dialog
+  usable before install. A target change must remain variant-scoped, accept
+  only a DNS hostname on port 443, pass a bounded TLS probe, staged config
+  validation and runtime health checks, and never rewrite client metadata,
+  credentials, or the other variant.
+
+Implementation context:
+
+- Component discovery and lifecycle operations are in
+  `internal/agent/agent.go`; AWG parameter generation and runtime updates are in
+  `internal/agent/amneziawg_parameters.go` and
+  `internal/agent/amneziawg_runtime.go`.
+- Existing Xray SNI mutation lives in `internal/agent/xray_sni.go`.
+- Privileged routes are registered in `internal/agent/agent.go`; authenticated
+  panel proxies are in `internal/panel/panel.go`.
+- Dashboard actions and shared dialogs are in `internal/panel/web/app.js`, with
+  shared styles in `internal/panel/web/app.css`.
+
+Progress:
+
+- [x] Inspected the current fixed tuning payload, rollback ownership metadata,
+  AWG 2.0 generator, runtime sync path, component discovery, and Settings UI.
+- [x] Chose validated desired-state files instead of a root-shell editor.
+- [x] Implement atomic, size-bounded desired settings storage, allowlisted
+  parsing, missing-line defaults, interrupted-write cleanup, and tests.
+- [x] Wire desired settings into fresh installs. Installed Network tuning saves
+  reapply the complete payload with file/runtime verification and rollback.
+  A fresh install also refuses exact tuning paths whose SBP ownership cannot
+  be proven, even when BBR is not currently active.
+  Installed AmneziaWG changes stage server config and metadata, preserve
+  client-only values, refuse active peers, verify runtime through the existing
+  sync path, and roll back server state if metadata replacement fails.
+- [x] Make Settings visible for every component before and after installation.
+  Xray persists only its server-side SNI allowlist; AmneziaWG exposes only
+  server J/S/H values; client fingerprint, DNS, and keepalive stay out. Routing
+  components keep their cookie/room view. Docker shows a read-only container
+  inventory, and remaining components without tunables show a read-only
+  explanation.
+- [x] Update documentation and add UI/API contract checks. Go tests, vet,
+  JavaScript syntax, deploy lifecycle assertions, formatting, and diff checks
+  pass locally.
+- [ ] Validate both settings dialogs at normal and narrow widths in an installed
+  build. The in-app browser blocked the workspace loopback preview by URL
+  policy, so no alternate browser-control workaround was used.
+
+Validation commands:
+
+```bash
+test -z "$(gofmt -l .)"
+go test ./...
+bash deploy/test_scripts.sh
+go vet ./...
+node --check internal/panel/web/app.js
+node --check internal/panel/web/check.js
+git diff --check
+```
+
+Recovery path: keep previous desired files, persistent component payloads, and
+runtime values until the replacement passes validation and health checks. On
+failure, restore the old files and runtime state and report rollback failure
+explicitly. Never mutate unowned files, containers, or settings.
+
+### Manage the REALITY target and additional SNI values for each Xray component
+
+Desired outcome: an administrator can open Settings from an Xray TCP or XHTTP
+component, inspect and safely change its REALITY target, see its allowed
+REALITY SNI values, add any syntactically valid hostname, and remove only
+additional values without changing the default SNI, devices, credentials, or
+the other Xray variant.
+
+Constraints and acceptance criteria:
+
+- Keep `www.googletagmanager.com` as the immutable default profile SNI. The
+  initial target remains `www.googletagmanager.com:443`, while each variant may
+  persist an independently selected DNS target on port 443.
+- Store the allowlist as persistent desired component settings so it is
+  available before installation. Project the same validated list into the
+  selected variant's managed Xray configuration when installed; do not change
+  client metadata or the immutable default profile SNI.
+- Refuse mutation unless the component is SBP-owned and its container inventory,
+  configuration, and metadata are valid.
+- Validate hostnames, reject duplicates and wildcards, require at least the
+  default SNI, and bound the list and request size.
+- Test a staged configuration with the pinned Xray image before replacing the
+  persistent file. Restart only the selected container, verify its API and
+  runtime users, and restore the previous configuration if application fails.
+- Before applying a target to an installed component, run a bounded TLS probe
+  through the pinned Xray image. Run the same probe during a later installation
+  when the target was saved before Docker was available.
+- The Settings dialog must show the default and additional SNI values, permit
+  additions and removal of additional values, and clearly state that profiles
+  continue to use the default unless edited in the client.
+- Install, Remove, Settings, and unavailable component controls must have the
+  same width without pinning their position.
+
+Implementation context:
+
+- Variant paths, managed container verification, client metadata, and Xray
+  configuration helpers are in `internal/agent/xray_variants.go`,
+  `internal/agent/agent.go`, and `internal/agent/xray_runtime.go`.
+- The privileged API is registered in `internal/agent/agent.go`; the panel proxy
+  routes are in `internal/panel/panel.go`.
+- Component actions and the shared dialog are rendered in
+  `internal/panel/web/app.js`; styles are in `internal/panel/web/app.css`.
+
+Progress:
+
+- [x] Confirmed that Xray accepts multiple server-side `serverNames`, while each
+  client profile sends one SNI and each SBP Xray variant retains one shared
+  target.
+- [x] Implement fail-closed list, add, remove, staged validation, restart, and
+  rollback behavior in the agent.
+- [x] Add authenticated panel API routes and the Settings dialog.
+- [x] Extend the list to persistent desired settings so the same dialog works
+  before installation. Installed mutations update desired state and runtime as
+  one rollback boundary; uninstall preserves desired settings for reinstall.
+- [x] Add a normalized per-variant target field, a 30-second pinned-image TLS
+  probe, staged application, runtime verification, rollback, and an explicit UI
+  warning that imported profiles are not rewritten.
+- [x] Equalize component action widths. Verified the component table at 1440
+  pixels and the dialog at a narrow 500-pixel viewport.
+- [x] Formatting, all Go tests, vet, both JavaScript syntax checks, shell
+  lifecycle assertions, and diff checks pass. Mutation tests cover validation,
+  idempotency, ownership refusal, default protection, successful removal, and
+  rollback after a failed restart. The pinned-image runtime path remains
+  release-CI-only because the local Windows environment has no Docker daemon.
+- [ ] Validate add, reconnect, manually selected client SNI, removal, and
+  unchanged operation of the other Xray variant on an installed release build.
+
+Validation commands:
+
+```bash
+test -z "$(gofmt -l .)"
+go test ./...
+bash deploy/test_scripts.sh
+go vet ./...
+node --check internal/panel/web/app.js
+node --check internal/panel/web/check.js
+git diff --check
+```
+
+Recovery path: keep the previous configuration in memory until the selected
+container passes health checks. On any apply failure, atomically restore the
+old configuration, restart and verify the same container, and report whether
+rollback succeeded. Never mutate the other variant or any external container.
+
 ### Replace the SBP Xray REALITY target proven incompatible on the affected route
 
 Desired outcome: fresh SBP Xray TCP and XHTTP installations use a REALITY

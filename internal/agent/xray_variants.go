@@ -9,7 +9,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+var xrayConfigMutationMu sync.Mutex
 
 type xrayVariant struct {
 	Method          string

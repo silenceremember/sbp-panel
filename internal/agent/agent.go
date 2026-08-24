@@ -41,6 +41,7 @@ type Discovery struct {
 	Containers      []string    `json:"containers"`
 	Kernel          string      `json:"kernel"`
 	Components      []Component `json:"components"`
+	Lifecycle       installJob  `json:"lifecycle"`
 	images          map[string]bool
 }
 
@@ -536,9 +537,11 @@ type Component struct {
 }
 
 type installJob struct {
-	Status string `json:"status"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	ComponentID string `json:"component_id,omitempty"`
+	Operation   string `json:"operation,omitempty"`
+	Status      string `json:"status"`
+	Output      string `json:"output,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type installer struct {
@@ -655,7 +658,7 @@ func componentStates(d Discovery, bbr bool) []Component {
 	hasImage := func(image string) bool { return d.images[strings.ToLower(image)] }
 	_, tweaksOwned := componentOwnership("tweaks")
 	_, dockerOwned := componentOwnership("docker")
-	tweaksExternal := bbr && !tweaksOwned
+	tweaksExternal := !tweaksOwned && (bbr || pathExists(networkTuningModulePath) || pathExists(networkTuningSysctlPath))
 	dockerExternal := d.DockerAvailable && !dockerOwned
 	tweaksNote := ""
 	if tweaksExternal {
@@ -705,7 +708,7 @@ func componentStates(d Discovery, bbr bool) []Component {
 	dionInstalled, dionExternal, dionNote := bypassState("dion")
 	vkInstalled, vkExternal, vkNote := bypassState("vk")
 	return []Component{
-		{ID: "tweaks", Name: "Network tuning (BBR + fq)", Installed: bbr && tweaksOwned, External: tweaksExternal, CanRemoveExternal: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: bbr && tweaksOwned, Version: "v1", Description: "Enables TCP BBR with the fq queue discipline at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
+		{ID: "tweaks", Name: "Network tuning", Installed: tweaksOwned, External: tweaksExternal, CanRemoveExternal: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: tweaksOwned, Description: "Applies validated TCP congestion control and queue discipline settings at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
 		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
@@ -720,6 +723,11 @@ func componentStates(d Discovery, bbr bool) []Component {
 func fileExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir() && st.Size() > 0
+}
+
+func pathExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func xrayConfigPath() string {
@@ -783,31 +791,40 @@ func (i *installer) get(id string) installJob {
 	return installJob{Status: "idle"}
 }
 
+func (i *installer) lifecycle() installJob {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.active == "" {
+		return installJob{Status: "idle"}
+	}
+	return i.jobs[i.active]
+}
+
 func (i *installer) start(id string) error {
 	if !validComponent(id) {
 		return errors.New("this component must be configured in the setup section below first")
 	}
-	return i.startJob(id, installComponent)
+	return i.startJob(id, "install", installComponent)
 }
 
 func (i *installer) startUninstall(id string) error {
 	if !validComponent(id) {
 		return errors.New("unknown component")
 	}
-	return i.startJob(id, uninstallComponent)
+	return i.startJob(id, "uninstall", uninstallComponent)
 }
 
 func (i *installer) startExternalRemoval(id string) error {
 	if id != "tweaks" && id != "docker" {
 		return errors.New("external removal is not supported for this component")
 	}
-	return i.startJob(id, removeExternalComponent)
+	return i.startJob(id, "external-remove", removeExternalComponent)
 }
 
-func (i *installer) startJob(id string, operation func(string, config.Config) (string, error)) error {
+func (i *installer) startJob(id, operationName string, operation func(string, config.Config) (string, error)) error {
 	i.mu.Lock()
 	if i.active != "" {
-		if i.active == id && i.jobs[id].Status == "running" {
+		if i.active == id && i.jobs[id].Status == "running" && i.jobs[id].Operation == operationName {
 			i.mu.Unlock()
 			return nil
 		}
@@ -821,12 +838,12 @@ func (i *installer) startJob(id string, operation func(string, config.Config) (s
 		return err
 	}
 	i.active = id
-	i.jobs[id] = installJob{Status: "running"}
+	i.jobs[id] = installJob{ComponentID: id, Operation: operationName, Status: "running"}
 	i.mu.Unlock()
 	go func() {
 		defer releaseLifecycle(owner)
 		out, err := operation(id, i.cfg)
-		job := installJob{Status: "done", Output: out}
+		job := installJob{ComponentID: id, Operation: operationName, Status: "done", Output: out}
 		if err != nil {
 			job.Status, job.Error = "error", err.Error()
 		}
@@ -888,6 +905,15 @@ func installNetworkTweaks() (string, error) {
 	if !alreadyOwned && kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control") == "bbr" {
 		return "BBR is already active outside SBP; it was not changed or adopted", nil
 	}
+	if !alreadyOwned {
+		for _, path := range []string{networkTuningModulePath, networkTuningSysctlPath} {
+			if _, err := os.Lstat(path); err == nil {
+				return "", fmt.Errorf("managed path %s already exists but SBP ownership is not proven", path)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("inspect managed path %s: %w", path, err)
+			}
+		}
+	}
 	previous := owned.Previous
 	if !alreadyOwned {
 		previous = map[string]string{
@@ -895,25 +921,20 @@ func installNetworkTweaks() (string, error) {
 			"default_qdisc":          kernelSetting("/proc/sys/net/core/default_qdisc"),
 		}
 	}
-	const modulePath = "/etc/modules-load.d/sbp-bbr.conf"
-	const sysctlPath = "/etc/sysctl.d/99-sbp-network.conf"
+	settings, err := loadNetworkTuningSettings()
+	if err != nil {
+		return "", fmt.Errorf("load Network tuning settings: %w", err)
+	}
+	if err := writeComponentSettings("tweaks", []byte(canonicalNetworkTuningSettings(settings))); err != nil {
+		return "", fmt.Errorf("persist Network tuning settings: %w", err)
+	}
 	cleanup := func() {
-		_ = os.Remove(modulePath)
-		_ = os.Remove(sysctlPath)
+		_ = os.Remove(networkTuningModulePath)
+		_ = os.Remove(networkTuningSysctlPath)
 		_, _ = restoreNetworkSettings(previous)
 	}
-	if err := os.WriteFile(modulePath, []byte("tcp_bbr\n"), 0644); err != nil {
-		return "", err
-	}
-	body := []byte("net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n")
-	if err := os.WriteFile(sysctlPath, body, 0644); err != nil {
-		cleanup()
-		return "", err
-	}
-	_, _ = run("modprobe", "tcp_bbr")
-	out, err := run("sysctl", "--system")
+	out, err := applyNetworkTuningSettings(settings, defaultNetworkTuningApplyOps())
 	if err != nil {
-		cleanup()
 		return out, err
 	}
 	if !alreadyOwned {
@@ -1865,6 +1886,13 @@ func installXrayVariant(variant xrayVariant) (string, error) {
 		}
 	}
 	config := newXrayConfigFor(variant, private, shortID, xhttpPath, fallbackLimit)
+	desiredSNI, err := applyDesiredXrayRealitySNI(config, variant)
+	if err != nil {
+		return "", fmt.Errorf("load %s REALITY SNI settings: %w", variant.Method, err)
+	}
+	if err := saveDesiredXrayRealitySNIState(variant.Method, desiredSNI); err != nil {
+		return "", fmt.Errorf("persist %s REALITY SNI settings: %w", variant.Method, err)
+	}
 	b, _ := json.MarshalIndent(config, "", "  ")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
@@ -1882,6 +1910,9 @@ func installXrayVariant(variant xrayVariant) (string, error) {
 	}
 	if _, err := run("docker", "pull", xrayImage); err != nil {
 		return "", err
+	}
+	if err := validateXrayRealityTargetReachability(desiredSNI.Target); err != nil {
+		return "", fmt.Errorf("validate %s REALITY target: %w", variant.Method, err)
 	}
 	configPath := filepath.Join(dir, "config.json")
 	if _, err := run("docker", "run", "--rm", "-v", configPath+":/etc/xray/config.json:ro", xrayImage, "run", "-test", "-config", "/etc/xray/config.json"); err != nil {
@@ -2024,11 +2055,15 @@ tail -f /dev/null
 	if err != nil {
 		return "", err
 	}
-	settings, err := newAmneziaWG2Settings()
+	serverSettings, _, err := loadDesiredAmneziaWGServerSettings()
 	if err != nil {
-		return "", fmt.Errorf("generate AmneziaWG 2.0 parameters: %w", err)
+		return "", fmt.Errorf("load AmneziaWG server settings: %w", err)
 	}
-	serverConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.8.1.1/24\nListenPort = %d\n%s", serverPrivate, awgPort, settings.server)
+	serverSettingsText := canonicalAmneziaWGServerSettings(serverSettings)
+	if err := writeComponentSettings("amneziawg", []byte(serverSettingsText)); err != nil {
+		return "", fmt.Errorf("persist AmneziaWG server settings: %w", err)
+	}
+	serverConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.8.1.1/24\nListenPort = %d\n%s", serverPrivate, awgPort, serverSettingsText)
 	awgDir := filepath.Join(dir, "awg")
 	if err := os.MkdirAll(awgDir, 0700); err != nil {
 		return "", err
@@ -2039,7 +2074,7 @@ tail -f /dev/null
 	metadata, _ := json.MarshalIndent(map[string]string{
 		"server_public": strings.TrimSpace(serverPublic),
 		"endpoint":      fmt.Sprintf("%s:%d", publicServerAddress(), awgPort),
-		"shared":        settings.client,
+		"shared":        serverSettingsText + "I1 = " + amneziaWG2DefaultI1 + "\n",
 	}, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "server.json"), metadata, 0600); err != nil {
 		return "", err
@@ -2493,6 +2528,9 @@ func provisionXray(name string) (string, error) {
 }
 
 func provisionXrayVariant(variant xrayVariant, name string) (string, error) {
+	xrayConfigMutationMu.Lock()
+	defer xrayConfigMutationMu.Unlock()
+
 	configPath := variant.configPath()
 	if configPath == "" {
 		return "", fmt.Errorf("%s was detected, but its managed config.json is unavailable", variant.Method)
@@ -2544,7 +2582,7 @@ func provisionXrayVariant(variant xrayVariant, name string) (string, error) {
 	}
 	client, err := variant.loadClientMetadata()
 	if err != nil {
-		_ = controlXrayCredentialsFor(variant, []string{fmt.Sprintf("vless://%s@invalid", uuid)}, false)
+		_ = controlXrayCredentialsForLocked(variant, []string{fmt.Sprintf("vless://%s@invalid", uuid)}, false)
 		return "", err
 	}
 	if client.Server == "" {
@@ -2552,7 +2590,7 @@ func provisionXrayVariant(variant xrayVariant, name string) (string, error) {
 	}
 	link, err := xrayCredentialLink(variant, uuid, name, client)
 	if err != nil {
-		_ = controlXrayCredentialsFor(variant, []string{fmt.Sprintf("vless://%s@invalid", uuid)}, false)
+		_ = controlXrayCredentialsForLocked(variant, []string{fmt.Sprintf("vless://%s@invalid", uuid)}, false)
 		return "", err
 	}
 	return link, nil
@@ -2647,6 +2685,12 @@ func controlXrayCredential(name, credential string, enabled bool) error {
 }
 
 func controlXrayCredentialsFor(variant xrayVariant, credentials []string, enabled bool) error {
+	xrayConfigMutationMu.Lock()
+	defer xrayConfigMutationMu.Unlock()
+	return controlXrayCredentialsForLocked(variant, credentials, enabled)
+}
+
+func controlXrayCredentialsForLocked(variant xrayVariant, credentials []string, enabled bool) error {
 	ids := make(map[string]bool, len(credentials))
 	for _, credential := range credentials {
 		match := regexp.MustCompile(`^vless://([^@]+)@`).FindStringSubmatch(strings.TrimSpace(credential))
@@ -2830,6 +2874,8 @@ func cleanupRuntimeArtifacts(c config.Config) error {
 		"/usr/local/sbin/sbp-panel-update.next",
 		"/var/lib/vpn-panel-agent/server-monitor.json.tmp",
 		"/run/vpn-panel/update-progress.json.tmp",
+		networkTuningModulePath + ".settings-next",
+		networkTuningSysctlPath + ".settings-next",
 	} {
 		if err := os.RemoveAll(path); err != nil {
 			problems = append(problems, fmt.Errorf("remove runtime temporary path %s: %w", path, err))
@@ -2839,16 +2885,31 @@ func cleanupRuntimeArtifacts(c config.Config) error {
 		if _, owned := componentOwnership(variant.Method); !owned {
 			continue
 		}
-		for _, path := range []string{variant.ConfigFile + ".next", variant.ConfigFile + ".write-next"} {
+		for _, path := range []string{variant.ConfigFile + ".next", variant.ConfigFile + ".write-next", variant.ConfigFile + ".sni-next"} {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				problems = append(problems, fmt.Errorf("remove %s runtime temporary file: %w", variant.Method, err))
 			}
 		}
 	}
 	if _, owned := componentOwnership("amneziawg"); owned {
-		path := "/opt/vpn-panel-managed/amneziawg/awg/awg0.conf.next"
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			problems = append(problems, fmt.Errorf("remove AmneziaWG runtime temporary file: %w", err))
+		for _, path := range []string{
+			"/opt/vpn-panel-managed/amneziawg/awg/awg0.conf.next",
+			"/opt/vpn-panel-managed/amneziawg/awg/" + amneziaWGStagingConfigName,
+			"/opt/vpn-panel-managed/amneziawg/server.json.settings-next",
+		} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				problems = append(problems, fmt.Errorf("remove AmneziaWG runtime temporary file %s: %w", path, err))
+			}
+		}
+	}
+	for _, id := range []string{"tweaks", "xray", "xray-xhttp", "amneziawg"} {
+		path, err := componentSettingsPath(id)
+		if err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		if err := os.Remove(path + ".tmp"); err != nil && !os.IsNotExist(err) {
+			problems = append(problems, fmt.Errorf("remove temporary %s settings: %w", id, err))
 		}
 	}
 	credentialTemps, err := filepath.Glob(filepath.Join(c.BypassSecretsDir, "*", "cookies.json.tmp"))
@@ -2913,7 +2974,11 @@ func Run(configPath string) error {
 	updateClient := &http.Client{Timeout: 2 * time.Minute}
 	reconcileUpdateProgress()
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]any{"ok": true}) })
-	mux.HandleFunc("GET /v1/discovery", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, discover()) })
+	mux.HandleFunc("GET /v1/discovery", func(w http.ResponseWriter, r *http.Request) {
+		discovery := discover()
+		discovery.Lifecycle = inst.lifecycle()
+		writeJSON(w, discovery)
+	})
 	mux.HandleFunc("GET /v1/metrics", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, monitor.snapshot()) })
 	mux.HandleFunc("GET /v1/bypass/rooms", func(w http.ResponseWriter, r *http.Request) {
 		rooms, err := listSavedBypassRooms("/opt/vpn-panel-managed")
@@ -2991,6 +3056,138 @@ func Run(configPath string) error {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "job": inst.get(r.PathValue("id"))})
+	})
+	mux.HandleFunc("GET /v1/components/{id}/settings", func(w http.ResponseWriter, r *http.Request) {
+		var state componentTextSettingsState
+		var err error
+		switch r.PathValue("id") {
+		case "tweaks":
+			state, err = networkTuningSettingsState()
+		case "amneziawg":
+			state, err = amneziaWGSettingsState()
+		default:
+			err = errors.New("editable server settings are not available for this component")
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "settings": state})
+	})
+	mux.HandleFunc("PUT /v1/components/{id}/settings", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Content string `json:"content"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxComponentSettingsBytes+1))
+		if err != nil || len(body) == 0 || len(body) > maxComponentSettingsBytes || json.Unmarshal(body, &input) != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid component settings request"))
+			return
+		}
+		owner := "component-settings:" + r.PathValue("id")
+		if err := acquireLifecycle(owner); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		defer releaseLifecycle(owner)
+		var state componentTextSettingsState
+		switch r.PathValue("id") {
+		case "tweaks":
+			state, err = saveNetworkTuningSettings(input.Content)
+		case "amneziawg":
+			state, err = saveAmneziaWGSettings(input.Content)
+		default:
+			err = errors.New("editable server settings are not available for this component")
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "settings": state})
+	})
+	mux.HandleFunc("GET /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
+		variant, ok := xrayVariantForMethod(r.PathValue("id"))
+		if !ok {
+			writeError(w, http.StatusBadRequest, errors.New("REALITY SNI settings are available only for Xray components"))
+			return
+		}
+		state, err := getXrayRealitySNIState(variant)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "settings": state})
+	})
+	mux.HandleFunc("POST /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
+		variant, ok := xrayVariantForMethod(r.PathValue("id"))
+		if !ok {
+			writeError(w, http.StatusBadRequest, errors.New("REALITY SNI settings are available only for Xray components"))
+			return
+		}
+		sni, err := decodeXrayRealitySNIRequest(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		owner := "component-settings:" + variant.Method
+		if err := acquireLifecycle(owner); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		defer releaseLifecycle(owner)
+		state, err := addXrayRealitySNI(variant, sni)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "settings": state})
+	})
+	mux.HandleFunc("PUT /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
+		variant, ok := xrayVariantForMethod(r.PathValue("id"))
+		if !ok {
+			writeError(w, http.StatusBadRequest, errors.New("REALITY settings are available only for Xray components"))
+			return
+		}
+		target, err := decodeXrayRealityTargetRequest(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		owner := "component-settings:" + variant.Method
+		if err := acquireLifecycle(owner); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		defer releaseLifecycle(owner)
+		state, err := setXrayRealityTarget(variant, target)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "settings": state})
+	})
+	mux.HandleFunc("DELETE /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
+		variant, ok := xrayVariantForMethod(r.PathValue("id"))
+		if !ok {
+			writeError(w, http.StatusBadRequest, errors.New("REALITY SNI settings are available only for Xray components"))
+			return
+		}
+		sni, err := decodeXrayRealitySNIRequest(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		owner := "component-settings:" + variant.Method
+		if err := acquireLifecycle(owner); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		defer releaseLifecycle(owner)
+		state, err := removeXrayRealitySNI(variant, sni)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "settings": state})
 	})
 	mux.HandleFunc("POST /v1/credentials", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {

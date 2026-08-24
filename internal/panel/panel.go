@@ -129,6 +129,12 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("DELETE /api/components/{id}", admin(s.uninstallComponent))
 	m.Handle("DELETE /api/components/{id}/external", admin(s.removeExternalComponent))
 	m.Handle("GET /api/components/{id}/install", auth(s.installStatus))
+	m.Handle("GET /api/components/{id}/settings", admin(s.componentSettings))
+	m.Handle("PUT /api/components/{id}/settings", admin(s.componentSettings))
+	m.Handle("GET /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
+	m.Handle("POST /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
+	m.Handle("PUT /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
+	m.Handle("DELETE /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
 	m.Handle("POST /api/bypass/{provider}/credentials", admin(s.uploadBypass))
 	m.Handle("DELETE /api/bypass/{provider}/credentials", admin(s.clearBypass))
 }
@@ -1101,6 +1107,7 @@ func (s *server) controlXrayCredentials(method string, devices []store.Device, e
 	return nil
 }
 func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	req, _ := http.NewRequest("GET", "http://unix/v1/discovery", nil)
 	resp, err := s.agent.Do(req)
 	if err != nil {
@@ -1253,6 +1260,7 @@ func (s *server) installComponent(w http.ResponseWriter, r *http.Request) {
 	s.proxyAgent(w, r, "POST", "/v1/components/"+r.PathValue("id")+"/install")
 }
 func (s *server) installStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	s.proxyAgent(w, r, "GET", "/v1/components/"+r.PathValue("id")+"/install")
 }
 func (s *server) uninstallComponent(w http.ResponseWriter, r *http.Request) {
@@ -1278,6 +1286,68 @@ func (s *server) removeExternalComponent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.proxyAgent(w, r, http.MethodDelete, "/v1/components/"+id+"/external")
+}
+
+func (s *server) componentSettings(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id != "tweaks" && id != "amneziawg" {
+		fail(w, http.StatusBadRequest, errors.New("editable server settings are not available for this component"))
+		return
+	}
+	var body []byte
+	if r.Method == http.MethodPut {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(r.Body, 32<<10+1))
+		if err != nil || len(body) == 0 || len(body) > 32<<10 {
+			fail(w, http.StatusBadRequest, errors.New("invalid component settings request size"))
+			return
+		}
+	}
+	req, _ := http.NewRequest(r.Method, "http://unix/v1/components/"+id+"/settings", bytes.NewReader(body))
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		fail(w, http.StatusBadGateway, fmt.Errorf("agent unavailable: %w", err))
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func (s *server) xrayRealitySNI(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id != "xray" && id != "xray-xhttp" {
+		fail(w, http.StatusBadRequest, errors.New("REALITY settings are available only for Xray components"))
+		return
+	}
+	var body []byte
+	if r.Method != http.MethodGet {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(r.Body, 4<<10+1))
+		if err != nil || len(body) == 0 || len(body) > 4<<10 {
+			fail(w, http.StatusBadRequest, errors.New("invalid REALITY settings request size"))
+			return
+		}
+	}
+	req, _ := http.NewRequest(r.Method, "http://unix/v1/components/"+id+"/reality-sni", bytes.NewReader(body))
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		fail(w, http.StatusBadGateway, fmt.Errorf("agent unavailable: %w", err))
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func (s *server) proxyAgent(w http.ResponseWriter, r *http.Request, method, path string) {

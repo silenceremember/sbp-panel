@@ -105,6 +105,305 @@ func TestExternalComponentRemovalForwarding(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPreservesActiveLifecycleState(t *testing.T) {
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.RequestURI() != "/v1/discovery" {
+			t.Fatalf("agent request = %s %s", request.Method, request.URL.RequestURI())
+		}
+		body := `{"components":[],"lifecycle":{"component_id":"docker","operation":"install","status":"running"}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{agent: agent}
+	response := httptest.NewRecorder()
+	s.discovery(response, httptest.NewRequest(http.MethodGet, "/api/discovery", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("active lifecycle discovery is cacheable: %#v", response.Header())
+	}
+	var result struct {
+		Lifecycle struct {
+			ComponentID string `json:"component_id"`
+			Operation   string `json:"operation"`
+			Status      string `json:"status"`
+		} `json:"lifecycle"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Lifecycle.ComponentID != "docker" || result.Lifecycle.Operation != "install" || result.Lifecycle.Status != "running" {
+		t.Fatalf("lifecycle state was changed: %+v", result.Lifecycle)
+	}
+}
+
+func TestInstallStatusIsNotCacheable(t *testing.T) {
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true,"job":{"status":"running"}}`))}, nil
+	})}
+	s := &server{agent: agent}
+	request := httptest.NewRequest(http.MethodGet, "/api/components/docker/install", nil)
+	request.SetPathValue("id", "docker")
+	response := httptest.NewRecorder()
+	s.installStatus(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d headers=%#v body=%q", response.Code, response.Header(), response.Body.String())
+	}
+}
+
+func TestDashboardClientLinksArePinnedAndProviderCredentialsMovedToSettings(t *testing.T) {
+	s := &server{}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"AmneziaVPN_4.8.21.0_windows_x64.exe",
+		"v2rayN-windows-64-desktop.zip",
+		"v2rayNG_2.2.6_arm64-v8a.apk",
+		"WhitelistBypass.Joiner-0.3.8-x64.exe",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("dashboard is missing pinned client download %q", expected)
+		}
+	}
+	if strings.Contains(body, "Service credentials") || strings.Contains(body, `id="cookies"`) {
+		t.Fatal("legacy dashboard credential panel is still present")
+	}
+}
+
+func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
+	s := &server{}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	readAsset := func(path string) string {
+		t.Helper()
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%q", path, response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	javascript := readAsset("/app.js")
+	for _, expected := range []string{
+		"GLOBAL_COMPONENT_SETTINGS_NOTICE",
+		"componentTextSettingsDialog(component)",
+		"dockerSettingsDialog(component, d.containers)",
+		"readOnlyComponentSettingsDialog(component)",
+		"const settingsAction = buttonHTML('Settings'",
+		"/api/components/${component.id}/settings",
+	} {
+		if !strings.Contains(javascript, expected) {
+			t.Fatalf("dashboard JavaScript is missing %q", expected)
+		}
+	}
+	if strings.Contains(strings.ToLower(javascript), "recommended") {
+		t.Fatal("dashboard JavaScript still contains a recommended badge")
+	}
+	stylesheet := readAsset("/app.css")
+	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px"} {
+		if !strings.Contains(stylesheet, expected) {
+			t.Fatalf("dashboard stylesheet is missing %q", expected)
+		}
+	}
+}
+
+func TestXrayRealitySNIForwardingIsVariantScopedAndBounded(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		method     string
+		id         string
+		body       string
+		wantStatus int
+		wantCalls  int
+	}{
+		{name: "read stable", method: http.MethodGet, id: "xray", wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "add xhttp", method: http.MethodPost, id: "xray-xhttp", body: `{"sni":"dl.google.com"}`, wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "change target", method: http.MethodPut, id: "xray", body: `{"target":"dl.google.com:443"}`, wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "remove stable", method: http.MethodDelete, id: "xray", body: `{"sni":"dl.google.com"}`, wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "unsupported component", method: http.MethodGet, id: "amneziawg", wantStatus: http.StatusBadRequest},
+		{name: "empty mutation", method: http.MethodPost, id: "xray", wantStatus: http.StatusBadRequest},
+		{name: "oversized mutation", method: http.MethodPost, id: "xray", body: strings.Repeat("x", 4<<10+1), wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if request.Method != test.method || request.URL.RequestURI() != "/v1/components/"+test.id+"/reality-sni" {
+					t.Fatalf("agent request = %s %s", request.Method, request.URL.RequestURI())
+				}
+				forwarded, _ := io.ReadAll(request.Body)
+				if string(forwarded) != test.body {
+					t.Fatalf("forwarded body=%q, want %q", forwarded, test.body)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+			})}
+			s := &server{agent: agent}
+			request := httptest.NewRequest(test.method, "/api/components/"+test.id+"/reality-sni", strings.NewReader(test.body))
+			request.SetPathValue("id", test.id)
+			response := httptest.NewRecorder()
+			s.xrayRealitySNI(response, request)
+			if response.Code != test.wantStatus || calls != test.wantCalls {
+				t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+			}
+			if test.wantStatus == http.StatusOK && response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("SNI response is cacheable: %#v", response.Header())
+			}
+		})
+	}
+}
+
+func TestXrayRealitySNIRoutesRequireAuthenticationAdminAndCSRF(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.Authenticate("admin", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrfToken, err := db.CreateSession(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true,"settings":{"default_sni":"www.googletagmanager.com","server_names":["www.googletagmanager.com"]}}`))}, nil
+	})}
+	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/components/xray/reality-sni", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || calls != 0 {
+		t.Fatalf("unauthenticated read status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/components/xray/reality-sni", strings.NewReader(`{"sni":"dl.google.com"}`))
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("CSRF-free mutation status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/components/xray/reality-sni", strings.NewReader(`{"sni":"dl.google.com"}`))
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("authenticated mutation status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+	}
+}
+
+func TestComponentSettingsForwardingIsScopedAndBounded(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		method     string
+		id         string
+		body       string
+		wantStatus int
+		wantCalls  int
+	}{
+		{name: "read tuning", method: http.MethodGet, id: "tweaks", wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "save AmneziaWG", method: http.MethodPut, id: "amneziawg", body: `{"content":"Jc = auto\n"}`, wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "unsupported component", method: http.MethodGet, id: "docker", wantStatus: http.StatusBadRequest},
+		{name: "empty mutation", method: http.MethodPut, id: "tweaks", wantStatus: http.StatusBadRequest},
+		{name: "oversized mutation", method: http.MethodPut, id: "tweaks", body: strings.Repeat("x", 32<<10+1), wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if request.Method != test.method || request.URL.RequestURI() != "/v1/components/"+test.id+"/settings" {
+					t.Fatalf("agent request = %s %s", request.Method, request.URL.RequestURI())
+				}
+				forwarded, _ := io.ReadAll(request.Body)
+				if string(forwarded) != test.body {
+					t.Fatalf("forwarded body=%q, want %q", forwarded, test.body)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+			})}
+			s := &server{agent: agent}
+			request := httptest.NewRequest(test.method, "/api/components/"+test.id+"/settings", strings.NewReader(test.body))
+			request.SetPathValue("id", test.id)
+			response := httptest.NewRecorder()
+			s.componentSettings(response, request)
+			if response.Code != test.wantStatus || calls != test.wantCalls {
+				t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+			}
+			if test.wantStatus == http.StatusOK && response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("settings response is cacheable: %#v", response.Header())
+			}
+		})
+	}
+}
+
+func TestComponentSettingsRoutesRequireAuthenticationAdminAndCSRF(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.Authenticate("admin", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrfToken, err := db.CreateSession(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true,"settings":{"component_id":"tweaks"}}`))}, nil
+	})}
+	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/components/tweaks/settings", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || calls != 0 {
+		t.Fatalf("unauthenticated read status=%d calls=%d", response.Code, calls)
+	}
+
+	body := `{"content":"modprobe tcp_bbr"}`
+	request = httptest.NewRequest(http.MethodPut, "/api/components/tweaks/settings", strings.NewReader(body))
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("CSRF-free mutation status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPut, "/api/components/tweaks/settings", strings.NewReader(body))
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("authenticated mutation status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+	}
+}
+
 func TestAmneziaAppCredentialRoundTrip(t *testing.T) {
 	native := "[Interface]\nPrivateKey = secret\n[Peer]\nEndpoint = 192.0.2.1:443\n"
 	got := displayCredential(store.Device{Method: "amneziawg", Format: "app", Credential: native})

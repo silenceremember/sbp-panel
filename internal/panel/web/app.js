@@ -14,6 +14,8 @@ let metricsRequestGeneration = 0;
 let discoveryGeneration = 0;
 let bypassRoomsGeneration = 0;
 let dialogGeneration = 0;
+let lifecycleWatchGeneration = 0;
+let activeLifecycle = null;
 let bypassRooms = [];
 const pendingUpdateKey = 'sbp-pending-update';
 const updateCacheKey = 'sbp-update-check-cache';
@@ -30,8 +32,19 @@ const DEVICE_METHOD_OPTIONS = [
   ['bypass-vk', 'VK Calls']
 ];
 const DEVICE_METHOD_NAMES = Object.fromEntries(DEVICE_METHOD_OPTIONS.map(([id, label, shortName]) => [id, shortName || label.split(' · ')[0]]));
+const BYPASS_COMPONENT_SETTINGS = {
+  'bypass-wb': {provider: 'wbstream', label: 'WB Stream'},
+  'bypass-telemost': {provider: 'telemost', label: 'Yandex Telemost'},
+  'bypass-dion': {provider: 'dion', label: 'DION'},
+  'bypass-vk': {provider: 'vk', label: 'VK Calls'}
+};
+const GLOBAL_COMPONENT_SETTINGS_NOTICE = 'Component settings are global desired server configuration. They are available before installation, are picked up by a later install, and remain available after installation.';
 
-document.querySelector('#dialog')?.addEventListener('close', () => { dialogGeneration++; });
+document.querySelector('#dialog')?.addEventListener('close', () => {
+  dialogGeneration++;
+  document.documentElement.classList.remove('dialog-open');
+  document.body.classList.remove('dialog-open');
+});
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -233,9 +246,16 @@ const buttonHTML = (label, variant = 'primary', attributes = '') => {
 };
 function setDialogAction(label, danger = false) {
   const button = document.querySelector('#dialog-ok');
+  const cancel = document.querySelector('#dialog-form [value="cancel"]');
+  if (cancel) cancel.hidden = false;
   button.textContent = label;
   button.className = danger ? 'button-danger' : '';
   return button;
+}
+function openDialog(dialog) {
+  document.documentElement.classList.add('dialog-open');
+  document.body.classList.add('dialog-open');
+  dialog.showModal();
 }
 async function runPendingAction(key, control, pendingLabel, action) {
   if (pendingActions.has(key)) return false;
@@ -433,7 +453,9 @@ async function load({showLoadingScreen = false} = {}) {
   if (generation !== viewGeneration) return false;
   csrf = nextState.csrf;
   state = nextState;
+  const scrollPosition = showLoadingScreen ? null : {left: window.scrollX, top: window.scrollY};
   render({discovery, metrics, rooms, devices: indexDevices(nextState.devices, nextState.groups)});
+  if (scrollPosition) requestAnimationFrame(() => window.scrollTo(scrollPosition));
   return true;
 }
 
@@ -452,6 +474,7 @@ async function refreshGroups() {
 
 function render(initial = {}) {
   stopMetricsPolling();
+  activeLifecycle = initial.discovery?.value?.lifecycle?.status === 'running' ? initial.discovery.value.lifecycle : null;
   app.innerHTML = '';
   app.append(document.querySelector('#dashboard').content.cloneNode(true));
   document.querySelector('#refresh').onclick = async event => {
@@ -479,7 +502,6 @@ function render(initial = {}) {
   loadMetrics(false, initial.metrics);
   loadBypassRooms(initial.rooms);
   startMetricsPolling();
-  setupUpload();
 }
 
 function setupUpdater() {
@@ -514,8 +536,8 @@ function setupUpdater() {
       button.textContent = 'Check for updates';
       button.classList.add('button-secondary');
     }
-    button.disabled = false;
-    prereleases.disabled = false;
+    button.disabled = Boolean(activeLifecycle);
+    prereleases.disabled = Boolean(activeLifecycle);
   };
   const check = async (announce = true) => {
     const generation = ++requestGeneration;
@@ -602,7 +624,7 @@ function setupServerLink() {
     document.querySelector('#dialog-title').textContent = 'Server page';
     setDialogAction('Save');
     body.innerHTML = `<label>URL<input id="server-url" type="url" placeholder="https://hosting.example/server/123" value="${escapeHTML(state.server_url || '')}"></label><small class="muted">A plain text link to the hosting dashboard or this server page will appear in the header.</small>`;
-    dialog.showModal();
+    openDialog(dialog);
     document.querySelector('#dialog-form').onsubmit = async event => {
       if (event.submitter?.value === 'cancel') return;
       event.preventDefault();
@@ -640,7 +662,7 @@ function groupDialog(group = null) {
   };
   unlimited.onchange = sync;
   sync();
-  dialog.showModal();
+  openDialog(dialog);
   document.querySelector('#dialog-form').onsubmit = async event => {
     if (event.submitter?.value === 'cancel') return;
     event.preventDefault();
@@ -762,7 +784,7 @@ function deviceDialog(device) {
     <label>Name<input id="device-name" value="${escapeHTML(device.name || 'Phone')}" required></label>
     <label>Protocol<select id="device-method" ${editing ? 'disabled' : ''}>${DEVICE_METHOD_OPTIONS.map(([id, label]) => `<option value="${id}" ${id === selectedMethod ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     ${editing ? '<small class="muted">Protocol and format are bound to the credential. Create another device to use a different option.</small>' : ''}`;
-  dialog.showModal();
+  openDialog(dialog);
   document.querySelector('#dialog-form').onsubmit = async event => {
     if (event.submitter?.value === 'cancel') return;
     event.preventDefault();
@@ -940,14 +962,64 @@ async function runComponentLifecycle(component, button, operation) {
       installing ? 'Installing…' : 'Removing…',
       async () => {
         await api(path, {method: installing ? 'POST' : 'DELETE'});
+        setLifecycleControls({component_id: component.id, operation, status: 'running'});
         await watchJob(component.id, button, installing ? 'install' : 'uninstall', {throwOnError: true});
       }
     );
   } catch (error) {
+    setLifecycleControls(null);
     if (button.isConnected) { button.disabled = false; button.textContent = 'Retry'; }
     notifyError(error);
     return false;
   }
+}
+
+function lifecyclePendingLabel(operation) {
+  if (operation === 'install') return 'Installing…';
+  if (operation === 'external-remove') return 'Removing…';
+  return 'Removing…';
+}
+
+function setLifecycleControls(job) {
+  activeLifecycle = job?.status === 'running' ? job : null;
+  const blocked = Boolean(activeLifecycle);
+  const controls = [
+    ...document.querySelectorAll('.component-actions button'),
+    document.querySelector('#update-check'),
+    document.querySelector('#update-prereleases')
+  ].filter(Boolean);
+  for (const control of controls) {
+    if (blocked) {
+      if (control.dataset.lifecycleWasDisabled === undefined) control.dataset.lifecycleWasDisabled = control.disabled ? '1' : '0';
+      control.disabled = true;
+      continue;
+    }
+    if (control.dataset.lifecycleWasDisabled !== undefined) {
+      control.disabled = control.dataset.lifecycleWasDisabled === '1';
+      delete control.dataset.lifecycleWasDisabled;
+    }
+  }
+}
+
+function resumeLifecycle(job) {
+  const running = job?.status === 'running' && job.component_id;
+  const generation = ++lifecycleWatchGeneration;
+  setLifecycleControls(running ? job : null);
+  if (!running) return;
+  const button = document.querySelector('[data-lifecycle-active]');
+  watchJob(job.component_id, button, job.operation || 'operation', {
+    throwOnError: true,
+    onDone: async completed => {
+      if (generation !== lifecycleWatchGeneration) return;
+      await load();
+      notify(completed.output || 'Component operation completed.', 'success');
+    }
+  }).catch(async error => {
+    if (generation !== lifecycleWatchGeneration) return;
+    setLifecycleControls(null);
+    await loadDiscovery();
+    notifyError(error);
+  });
 }
 
 function externalRemovalDialog(component) {
@@ -960,7 +1032,7 @@ function externalRemovalDialog(component) {
     ? 'SBP will remove an external Ubuntu docker.io package only if containers, images, volumes, and custom networks are all absent. External configuration and data directories are never deleted.'
     : 'SBP will remove exact BBR and fq assignments from detected sysctl configuration files, preserve every other setting, and then reset the active kernel values.';
   body.innerHTML = `<p>${escapeHTML(warning)}</p><p class="muted">After removal, install the component again to make it fully managed by SBP.</p>`;
-  dialog.showModal();
+  openDialog(dialog);
   document.querySelector('#dialog-form').onsubmit = async event => {
     if (event.submitter?.value === 'cancel') return;
     event.preventDefault();
@@ -968,6 +1040,240 @@ function externalRemovalDialog(component) {
     const removed = await runComponentLifecycle(component, submit, 'external-remove');
     if (removed && generation === dialogGeneration && dialog.open) dialog.close();
   };
+}
+
+function bypassSettingsDialog(component) {
+  const settings = BYPASS_COMPONENT_SETTINGS[component.id];
+  if (!settings) return;
+  const generation = ++dialogGeneration;
+  const dialog = document.querySelector('#dialog');
+  const body = document.querySelector('#dialog-body');
+  const form = document.querySelector('#dialog-form');
+  document.querySelector('#dialog-title').textContent = `${settings.label} settings`;
+  setDialogAction('Close');
+  const cancel = form.querySelector('[value="cancel"]');
+  if (cancel) cancel.hidden = true;
+  body.innerHTML = '<p class="muted">Loading provider settings…</p>';
+  form.onsubmit = () => {};
+  openDialog(dialog);
+
+  const render = () => {
+    if (generation !== dialogGeneration || !dialog.open) return;
+    body.innerHTML = `
+      <p class="settings-notice">${escapeHTML(GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
+      <p class="muted">Upload or replace the account cookie JSON used by ${escapeHTML(settings.label)}. It is stored in a root-only server directory and can be prepared before the component is installed.</p>
+      <label class="drop bypass-settings-drop">Drop the cookie JSON file here<input type="file" accept="application/json,.json"></label>
+      <div class="saved-rooms"><span class="saved-rooms-title">Rooms</span><div class="saved-room-list" data-bypass-rooms></div></div>
+      <div class="upload-footer"><button type="button" class="button-danger" data-clear-bypass>Clear credentials</button></div>`;
+    const input = body.querySelector('input[type="file"]');
+    const drop = body.querySelector('.bypass-settings-drop');
+    const rooms = body.querySelector('[data-bypass-rooms]');
+    renderBypassRooms(rooms, settings.provider);
+
+    const upload = async file => {
+      if (!file) return;
+      const payload = new FormData();
+      payload.append('cookies', file);
+      try {
+        await runPendingAction(`bypass:${settings.provider}:upload`, input, '', async () => {
+          const value = await api(`/api/bypass/${settings.provider}/credentials`, {method: 'POST', body: payload});
+          input.value = '';
+          notify(`Uploaded: ${value.filename}, ${value.bytes} bytes`, 'success', `${settings.label} cookies uploaded`);
+        });
+      } catch (error) { notifyError(error); }
+    };
+    input.onchange = () => upload(input.files[0]);
+    for (const name of ['dragenter', 'dragover']) drop.addEventListener(name, event => {
+      event.preventDefault();
+      drop.classList.add('drag');
+    });
+    for (const name of ['dragleave', 'drop']) drop.addEventListener(name, event => {
+      event.preventDefault();
+      drop.classList.remove('drag');
+    });
+    drop.addEventListener('drop', event => upload(event.dataTransfer.files[0]));
+    body.querySelector('[data-clear-bypass]').onclick = async event => {
+      if (!confirm(`Clear cookies and stop the current “${settings.label}” session? Devices and saved group rooms will remain. Upload a new JSON file to start them again.`)) return;
+      try {
+        await runPendingAction(`bypass:${settings.provider}:clear`, event.currentTarget, 'Clearing…', async () => {
+          const value = await api(`/api/bypass/${settings.provider}/credentials`, {method: 'DELETE'});
+          input.value = '';
+          notify(value.message || 'Credentials cleared.', 'success');
+        });
+      } catch (error) { notifyError(error); }
+    };
+  };
+
+  api('/api/bypass/rooms')
+    .then(value => {
+      bypassRooms = Array.isArray(value?.rooms) ? value.rooms : [];
+      render();
+    })
+    .catch(error => {
+      if (generation === dialogGeneration && dialog.open) dialog.close();
+      notifyError(error);
+    });
+}
+
+function xrayRealitySNIDialog(component) {
+  const generation = ++dialogGeneration;
+  const dialog = document.querySelector('#dialog');
+  const body = document.querySelector('#dialog-body');
+  const form = document.querySelector('#dialog-form');
+  document.querySelector('#dialog-title').textContent = `${component.name} settings`;
+  setDialogAction('Add SNI');
+  body.innerHTML = '<p class="muted">Loading REALITY SNI settings…</p>';
+  openDialog(dialog);
+
+  const renderSettings = settings => {
+    if (generation !== dialogGeneration || !dialog.open) return;
+    const defaultSNI = String(settings?.default_sni || '');
+    const target = String(settings?.target || '');
+    const names = Array.isArray(settings?.server_names) ? settings.server_names : [];
+    const list = names.map(name => {
+      const isDefault = name === defaultSNI;
+      return `<li><span><code>${escapeHTML(name)}</code>${isDefault ? '<small>Default</small>' : ''}</span>${isDefault ? '' : buttonHTML('Remove', 'danger', `type="button" data-remove-sni="${escapeHTML(name)}"`)}</li>`;
+    }).join('');
+    body.innerHTML = `
+      <p class="settings-notice">${escapeHTML(GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
+      <p class="muted">The default SNI remains in all generated profiles. Additional values become valid server-side choices for profiles edited manually in the client.</p>
+      <label>REALITY target<div class="settings-inline-control"><input data-reality-target type="text" maxlength="259" value="${escapeHTML(target)}" placeholder="www.googletagmanager.com:443" autocomplete="off"><button type="button" class="button-secondary" data-save-reality-target>Save target</button></div><small class="settings-warning">The target must be a TLS hostname on port 443. SBP probes it before applying it to an installed component, or during a later installation. Already imported profiles are not rewritten.</small></label>
+      <ul class="sni-list">${list}</ul>
+      <label>Add SNI<input id="xray-reality-sni" type="text" maxlength="253" placeholder="dl.google.com" autocomplete="off" required><small class="muted">Enter a hostname only. If installed, the selected Xray container briefly reconnects after a validated change. Otherwise the value is saved for installation.</small></label>`;
+    for (const remove of body.querySelectorAll('[data-remove-sni]')) {
+      remove.onclick = async () => {
+        const sni = remove.dataset.removeSni;
+        if (!confirm(`Remove “${sni}” from the allowed SNI list? Profiles manually using it will stop connecting.`)) return;
+        try {
+          await runPendingAction(`component:${component.id}:sni`, remove, 'Removing…', async () => {
+            const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'DELETE', body: {sni}});
+            renderSettings(result.settings);
+            notify(`SNI “${sni}” removed.`, 'success');
+          });
+        } catch (error) { notifyError(error); }
+      };
+    }
+    body.querySelector('[data-save-reality-target]').onclick = async event => {
+      const input = body.querySelector('[data-reality-target]');
+      const value = input?.value.trim();
+      if (!value) return input?.focus();
+      if (!confirm(`Change the REALITY target for “${component.name}” to “${value}”? Existing client profiles will not be rewritten.`)) return;
+      try {
+        await runPendingAction(`component:${component.id}:target`, event.currentTarget, 'Checking…', async () => {
+          const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'PUT', body: {target: value}});
+          renderSettings(result.settings);
+          notify(`REALITY target changed to “${result.settings.target}”.`, 'success');
+        });
+      } catch (error) { notifyError(error); }
+    };
+  };
+
+  form.onsubmit = async event => {
+    if (event.submitter?.value === 'cancel') return;
+    event.preventDefault();
+    const input = body.querySelector('#xray-reality-sni');
+    if (!input?.reportValidity()) return;
+    const submit = event.submitter || document.querySelector('#dialog-ok');
+    const sni = input.value.trim();
+    try {
+      await runPendingAction(`component:${component.id}:sni`, submit, 'Adding…', async () => {
+        const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'POST', body: {sni}});
+        renderSettings(result.settings);
+        notify(`SNI “${sni}” is allowed for ${component.name}.`, 'success');
+      });
+    } catch (error) { notifyError(error); }
+  };
+
+  api(`/api/components/${component.id}/reality-sni`)
+    .then(result => renderSettings(result.settings))
+    .catch(error => {
+      if (generation === dialogGeneration && dialog.open) dialog.close();
+      notifyError(error);
+    });
+}
+
+function componentTextSettingsDialog(component) {
+  const generation = ++dialogGeneration;
+  const dialog = document.querySelector('#dialog');
+  const body = document.querySelector('#dialog-body');
+  const form = document.querySelector('#dialog-form');
+  document.querySelector('#dialog-title').textContent = `${component.name} settings`;
+  setDialogAction('Save');
+  body.innerHTML = '<p class="muted">Loading server settings…</p>';
+  openDialog(dialog);
+
+  const render = settings => {
+    if (generation !== dialogGeneration || !dialog.open) return;
+    const warning = settings?.warning ? `<p class="settings-warning">${escapeHTML(settings.warning)}</p>` : '';
+    const label = component.id === 'tweaks' ? 'Validated server commands' : 'AmneziaWG server parameters';
+    body.innerHTML = `
+      <p class="settings-notice">${escapeHTML(settings?.notice || GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
+      ${warning}
+      <label>${escapeHTML(label)}<textarea class="component-settings-editor" rows="13" spellcheck="false" autocomplete="off">${escapeHTML(settings?.content || '')}</textarea><small class="muted">Only the displayed server-side keys are accepted. Missing lines are restored to validated defaults when saved.</small></label>
+      <div class="settings-editor-actions"><button type="button" class="button-secondary" data-restore-component-defaults>Restore defaults</button></div>`;
+    body.querySelector('[data-restore-component-defaults]').onclick = () => {
+      body.querySelector('.component-settings-editor').value = String(settings?.default_content || '');
+    };
+  };
+
+  form.onsubmit = async event => {
+    if (event.submitter?.value === 'cancel') return;
+    event.preventDefault();
+    const editor = body.querySelector('.component-settings-editor');
+    if (!editor) return;
+    const submit = event.submitter || document.querySelector('#dialog-ok');
+    try {
+      await runPendingAction(`component:${component.id}:settings`, submit, 'Saving…', async () => {
+        const result = await api(`/api/components/${component.id}/settings`, {method: 'PUT', body: {content: editor.value}});
+        render(result.settings);
+        const message = !component.installed
+          ? `${component.name} settings saved for installation.`
+          : component.id === 'tweaks' ? `${component.name} settings saved and reapplied.` : `${component.name} settings saved.`;
+        notify(message, 'success');
+      });
+    } catch (error) { notifyError(error); }
+  };
+
+  api(`/api/components/${component.id}/settings`)
+    .then(result => render(result.settings))
+    .catch(error => {
+      if (generation === dialogGeneration && dialog.open) dialog.close();
+      notifyError(error);
+    });
+}
+
+function readOnlyComponentSettingsDialog(component) {
+  const dialog = document.querySelector('#dialog');
+  const body = document.querySelector('#dialog-body');
+  const form = document.querySelector('#dialog-form');
+  ++dialogGeneration;
+  document.querySelector('#dialog-title').textContent = `${component.name} settings`;
+  setDialogAction('Close');
+  const cancel = form.querySelector('[value="cancel"]');
+  if (cancel) cancel.hidden = true;
+  body.innerHTML = `<p class="settings-notice">${escapeHTML(GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p><p class="muted">This component has no editable server parameters. Its lifecycle and ownership policy are managed automatically by SBP.</p>`;
+  form.onsubmit = () => {};
+  openDialog(dialog);
+}
+
+function dockerSettingsDialog(component, containers) {
+  const dialog = document.querySelector('#dialog');
+  const body = document.querySelector('#dialog-body');
+  const form = document.querySelector('#dialog-form');
+  ++dialogGeneration;
+  document.querySelector('#dialog-title').textContent = `${component.name} settings`;
+  setDialogAction('Close');
+  const cancel = form.querySelector('[value="cancel"]');
+  if (cancel) cancel.hidden = true;
+  const names = [...new Set((Array.isArray(containers) ? containers : [])
+    .map(name => String(name || '').trim())
+    .filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const inventory = names.length
+    ? `<ul class="container-list">${names.map(name => `<li><code>${escapeHTML(name)}</code></li>`).join('')}</ul>`
+    : '<p class="muted">No containers were detected.</p>';
+  body.innerHTML = `<p class="settings-notice">This is a read-only view of the containers currently reported by Docker. Container management remains in the owning component lifecycle.</p>${inventory}`;
+  form.onsubmit = () => {};
+  openDialog(dialog);
 }
 
 async function loadDiscovery(prefetched = null) {
@@ -983,15 +1289,21 @@ async function loadDiscovery(prefetched = null) {
     root.innerHTML = '';
     for (const component of d.components || []) {
       const row = document.createElement('tr');
+      const isBypass = Boolean(BYPASS_COMPONENT_SETTINGS[component.id]);
+      const componentIsActive = d.lifecycle?.status === 'running' && d.lifecycle.component_id === component.id;
       const stateLabel = component.external
         ? '<span class="state-pill external">External</span>'
         : component.installed ? '<span class="state-pill up">Installed</span>' : '<span class="state-pill">Not installed</span>';
-      const version = `${escapeHTML(component.version || '-')}${component.id === 'xray' ? ' <span class="recommended">Recommended</span>' : ''}`;
-      const action = component.external
-        ? component.can_remove_external ? buttonHTML('Remove', 'danger', 'data-remove-external') : '<span class="muted">-</span>'
-        : component.installed
-          ? buttonHTML('Remove', 'danger', 'data-uninstall')
-          : buttonHTML(component.can_install ? 'Install' : 'Unavailable', 'primary', `data-install ${component.can_install ? '' : 'disabled'}`.trim());
+      const version = escapeHTML(component.version || '-');
+      const settingsAction = buttonHTML('Settings', 'secondary', 'data-component-settings');
+      const lifecycleAction = componentIsActive
+        ? buttonHTML(lifecyclePendingLabel(d.lifecycle.operation), 'secondary', 'data-lifecycle-active disabled')
+        : component.external
+          ? component.can_remove_external ? buttonHTML('Remove', 'danger', 'data-remove-external') : '<span class="muted">-</span>'
+          : component.installed
+            ? buttonHTML('Remove', 'danger', 'data-uninstall')
+            : buttonHTML(component.can_install ? 'Install' : 'Unavailable', 'primary', `data-install ${component.can_install ? '' : 'disabled'}`.trim());
+      const action = settingsAction + lifecycleAction;
       const blocker = component.note || (component.installed && !component.can_uninstall ? 'The component was detected but is not managed by the panel.' : '');
       row.innerHTML = `<td><b>${escapeHTML(component.name)}</b></td><td>${version}</td><td>${stateLabel}</td><td><div class="install-note"><span>${escapeHTML(component.description || 'Managed panel component.')}</span>${blocker ? `<strong>${escapeHTML(blocker)}</strong>` : ''}</div></td><td><div class="component-actions">${action}</div></td>`;
       const button = row.querySelector('[data-install]');
@@ -1000,6 +1312,13 @@ async function loadDiscovery(prefetched = null) {
         await runComponentLifecycle(component, button, 'install');
       };
       row.querySelector('[data-remove-external]')?.addEventListener('click', () => externalRemovalDialog(component));
+      row.querySelector('[data-component-settings]')?.addEventListener('click', () => {
+        if (isBypass) bypassSettingsDialog(component);
+        else if (component.id === 'xray' || component.id === 'xray-xhttp') xrayRealitySNIDialog(component);
+        else if (component.id === 'tweaks' || component.id === 'amneziawg') componentTextSettingsDialog(component);
+        else if (component.id === 'docker') dockerSettingsDialog(component, d.containers);
+        else readOnlyComponentSettingsDialog(component);
+      });
       row.querySelector('[data-uninstall]')?.addEventListener('click', async event => {
         const remove = event.currentTarget;
         if (!component.can_uninstall) {
@@ -1014,6 +1333,7 @@ async function loadDiscovery(prefetched = null) {
       });
       root.append(row);
     }
+    resumeLifecycle(d.lifecycle);
   } catch (e) {
     if (generation !== discoveryGeneration || !server.isConnected || !root.isConnected) return;
     server.innerHTML = '<tr><td>Agent</td><td>Unavailable</td></tr>';
@@ -1163,43 +1483,7 @@ async function watchJob(id, button, operation, options = {}) {
   throw new Error(`${label} is still running after ten minutes. Refresh the dashboard to check its status.`);
 }
 
-function setupUpload() {
-  const input = document.querySelector('#cookies');
-  const drop = document.querySelector('#drop');
-  const providerSelect = document.querySelector('#provider');
-  providerSelect.onchange = renderBypassRooms;
-  input.onchange = () => upload(input.files[0]);
-  for (const name of ['dragenter', 'dragover']) drop.addEventListener(name, e => { e.preventDefault(); drop.classList.add('drag'); });
-  for (const name of ['dragleave', 'drop']) drop.addEventListener(name, e => { e.preventDefault(); drop.classList.remove('drag'); });
-  drop.addEventListener('drop', e => upload(e.dataTransfer.files[0]));
-  document.querySelector('#clear-cookies').onclick = async () => {
-    const provider = document.querySelector('#provider').value;
-    const label = document.querySelector('#provider').selectedOptions[0].textContent;
-    if (!confirm(`Clear cookies and stop the current “${label}” session? Devices and saved group rooms will remain. Upload a new JSON file to start them again.`)) return;
-    try {
-      const v = await api(`/api/bypass/${provider}/credentials`, {method: 'DELETE'});
-      notify(v.message || 'Credentials cleared.', 'success');
-      input.value = '';
-      await loadDiscovery();
-    } catch (e) { notifyError(e); }
-  };
-  async function upload(file) {
-    if (!file) return;
-    const form = new FormData();
-    form.append('cookies', file);
-    try {
-      const provider = document.querySelector('#provider').value;
-      const v = await api(`/api/bypass/${provider}/credentials`, {method: 'POST', body: form});
-      notify(`Uploaded: ${v.filename}, ${v.bytes} bytes`, 'success', 'Cookies uploaded');
-      input.value = '';
-      await loadDiscovery();
-    } catch (e) { notifyError(e); }
-  }
-}
-
-function renderBypassRooms() {
-  const root = document.querySelector('#bypass-rooms');
-  const provider = document.querySelector('#provider')?.value;
+function renderBypassRooms(root, provider) {
   if (!root || !provider) return;
   const rooms = bypassRooms.filter(room => room.provider === provider);
   if (!rooms.length) {
@@ -1211,19 +1495,21 @@ function renderBypassRooms() {
 
 async function loadBypassRooms(prefetched = null) {
   const generation = ++bypassRoomsGeneration;
-  const root = document.querySelector('#bypass-rooms');
-  if (!root) return false;
+  const root = document.querySelector('[data-bypass-rooms]');
   try {
     if (prefetched?.error) throw prefetched.error;
     const value = prefetched?.value || await api('/api/bypass/rooms');
-    if (generation !== bypassRoomsGeneration || !root.isConnected) return false;
+    if (generation !== bypassRoomsGeneration) return false;
     bypassRooms = Array.isArray(value?.rooms) ? value.rooms : [];
-    renderBypassRooms();
+    if (root?.isConnected) {
+      const component = Object.values(BYPASS_COMPONENT_SETTINGS).find(item => document.querySelector('#dialog-title')?.textContent === `${item.label} settings`);
+      renderBypassRooms(root, component?.provider);
+    }
     return true;
   } catch (error) {
-    if (generation !== bypassRoomsGeneration || !root.isConnected) return false;
+    if (generation !== bypassRoomsGeneration) return false;
     bypassRooms = [];
-    root.innerHTML = `<span class="error">${escapeHTML(error.message || 'Could not load rooms.')}</span>`;
+    if (root?.isConnected) root.innerHTML = `<span class="error">${escapeHTML(error.message || 'Could not load rooms.')}</span>`;
     return false;
   }
 }

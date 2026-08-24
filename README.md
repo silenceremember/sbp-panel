@@ -54,7 +54,7 @@ This example is from an earlier release, so some labels and versions may differ 
 
 | Component | Version | Purpose |
 |---|---:|---|
-| Network tuning | v1 | BBR with the `fq` queue discipline |
+| Network tuning | - | Validated TCP congestion control and queue discipline settings |
 | Docker | Ubuntu package | Isolated managed services |
 | [Xray](https://github.com/XTLS/Xray-core) | 26.3.27 | VLESS over TCP with REALITY and XTLS Vision |
 | [Xray](https://github.com/XTLS/Xray-core) XHTTP | 26.3.27 | VLESS over XHTTP with REALITY |
@@ -114,8 +114,8 @@ https://YOUR_SERVER_IP:9443
 
 ## First setup
 
-1. Open **Components** and install Network tuning, Docker, and the VPN methods you need.
-2. Upload authorized cookie JSON under **Service credentials** if routing integrations are required.
+1. Open **Components** and review **Settings** for the components you plan to use. Settings are global desired server configuration and remain available before and after installation.
+2. Install Network tuning, Docker, and the VPN methods you need. Upload the authorized cookie JSON from **Settings** for each required routing component.
 3. Create a group and choose an expiration date or unlimited access.
 4. Add a device and select its connection method.
 5. Copy the profile or scan its QR code and import it into a client.
@@ -143,6 +143,12 @@ Profiles use the readable name `SBP · Group name · Device name`. Routing integ
 |---|---|
 | Device changes | Xray and AmneziaWG credentials are applied live without restarting shared containers |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
+| Component lifecycle | An active install or removal is restored after a browser reload and conflicting component or update actions remain disabled until it finishes |
+| Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |
+| Docker settings | Read-only list of the containers currently reported by Docker |
+| REALITY settings | Each Xray component keeps its default profile SNI and can save a validated TLS target plus additional server-side SNI hostnames before installation or apply them to its installed managed container |
+| AmneziaWG settings | Server-side AWG obfuscation parameters are available before and after installation; profile-affecting changes are refused while peers exist |
+| Routing settings | Each routing component keeps its own cookie JSON upload, clear action, and saved rooms under **Components > Settings** |
 | Expiration | Expired groups are reconciled with runtime credentials and routing access |
 | Routing | One room is shared by each group and provider, not each device row |
 | Traffic | Current UTC month only; operational estimates, not billing records |
