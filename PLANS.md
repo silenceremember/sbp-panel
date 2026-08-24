@@ -6,41 +6,6 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
-### Publish the stable v1.1.1 settings-dialog fix
-
-Desired outcome: publish the validated settings-dialog and REALITY target
-polish as stable `v1.1.1`, then retain `v1.1.0` and its immutable tag as a
-GitHub prerelease so users can identify it as superseded without losing the
-rollback artifact.
-
-Constraints and acceptance criteria:
-
-- The source version and tag must both be `1.1.1`; `Prerelease` remains false.
-- Commit only the intended settings-dialog, validation, test, plan, and version
-  changes. Never rewrite or reuse an existing tag.
-- Run the full applicable local validation before committing and tagging.
-- Push the release commit and matching tag, wait for GitHub Actions, and verify
-  the stable release category, latest marker, asset allowlist, metadata version,
-  size, and SHA-256 digest.
-- Mark the existing `v1.1.0` GitHub Release as prerelease only after `v1.1.1`
-  is published successfully. Do not delete its release, tag, or assets.
-
-Progress:
-
-- [x] Confirmed the intended diff and selected patch version `1.1.1`.
-- [x] Run the full release validation and inspect the final diff. Formatting,
-  all Go tests, vet, both JavaScript syntax checks, deploy lifecycle assertions,
-  diff checks, release metadata, and archive allowlist checks pass locally.
-- [ ] Commit, tag, and push `v1.1.1`; verify the successful release workflow.
-- [ ] Verify the published assets and categories, then mark `v1.1.0` as
-  prerelease.
-
-Recovery path: before pushing the tag, fix forward locally. After the tag is
-published, never move or reuse it; publish a newer patch version for any fix.
-If release automation fails before creating a release, preserve the pushed tag
-and repair with a newer version rather than rewriting history. Leave `v1.1.0`
-stable until the replacement release and its assets are proven healthy.
-
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action
