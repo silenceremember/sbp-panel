@@ -6,6 +6,41 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
+### Publish the stable v1.1.1 settings-dialog fix
+
+Desired outcome: publish the validated settings-dialog and REALITY target
+polish as stable `v1.1.1`, then retain `v1.1.0` and its immutable tag as a
+GitHub prerelease so users can identify it as superseded without losing the
+rollback artifact.
+
+Constraints and acceptance criteria:
+
+- The source version and tag must both be `1.1.1`; `Prerelease` remains false.
+- Commit only the intended settings-dialog, validation, test, plan, and version
+  changes. Never rewrite or reuse an existing tag.
+- Run the full applicable local validation before committing and tagging.
+- Push the release commit and matching tag, wait for GitHub Actions, and verify
+  the stable release category, latest marker, asset allowlist, metadata version,
+  size, and SHA-256 digest.
+- Mark the existing `v1.1.0` GitHub Release as prerelease only after `v1.1.1`
+  is published successfully. Do not delete its release, tag, or assets.
+
+Progress:
+
+- [x] Confirmed the intended diff and selected patch version `1.1.1`.
+- [x] Run the full release validation and inspect the final diff. Formatting,
+  all Go tests, vet, both JavaScript syntax checks, deploy lifecycle assertions,
+  diff checks, release metadata, and archive allowlist checks pass locally.
+- [ ] Commit, tag, and push `v1.1.1`; verify the successful release workflow.
+- [ ] Verify the published assets and categories, then mark `v1.1.0` as
+  prerelease.
+
+Recovery path: before pushing the tag, fix forward locally. After the tag is
+published, never move or reuse it; publish a newer patch version for any fix.
+If release automation fails before creating a release, preserve the pushed tag
+and repair with a newer version rather than rewriting history. Leave `v1.1.0`
+stable until the replacement release and its assets are proven healthy.
+
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action
@@ -46,9 +81,9 @@ Constraints and acceptance criteria:
 - Existing Xray SNI and routing-cookie settings remain isolated by component.
   Extend Xray desired SNI storage only as needed to make the existing dialog
   usable before install. A target change must remain variant-scoped, accept
-  only a DNS hostname on port 443, pass a bounded TLS probe, staged config
-  validation and runtime health checks, and never rewrite client metadata,
-  credentials, or the other variant.
+  only a DNS hostname and a port from 1 to 65535, pass a bounded TLS probe,
+  staged config validation and runtime health checks, and never rewrite client
+  metadata, credentials, or the other variant.
 
 Implementation context:
 
@@ -85,9 +120,13 @@ Progress:
 - [x] Update documentation and add UI/API contract checks. Go tests, vet,
   JavaScript syntax, deploy lifecycle assertions, formatting, and diff checks
   pass locally.
+- [x] Polish the Xray dialog so data renders before the modal opens, the target
+  uses separate hostname and port controls, Add SNI is its own action, footer
+  Save closes without validating an empty Add SNI field, the scrollbar gutter
+  remains stable, and notifications stay above the modal.
 - [ ] Validate both settings dialogs at normal and narrow widths in an installed
-  build. The in-app browser blocked the workspace loopback preview by URL
-  policy, so no alternate browser-control workaround was used.
+  build. The local preview server was not running during the final browser
+  check, so no visual result is claimed from that attempt.
 
 Validation commands:
 
@@ -118,7 +157,7 @@ Constraints and acceptance criteria:
 
 - Keep `www.googletagmanager.com` as the immutable default profile SNI. The
   initial target remains `www.googletagmanager.com:443`, while each variant may
-  persist an independently selected DNS target on port 443.
+  persist an independently selected DNS target and TLS port.
 - Store the allowlist as persistent desired component settings so it is
   available before installation. Project the same validated list into the
   selected variant's managed Xray configuration when installed; do not change

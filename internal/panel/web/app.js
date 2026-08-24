@@ -44,6 +44,9 @@ document.querySelector('#dialog')?.addEventListener('close', () => {
   dialogGeneration++;
   document.documentElement.classList.remove('dialog-open');
   document.body.classList.remove('dialog-open');
+  const notifications = document.querySelector('#notifications');
+  const appRoot = document.querySelector('#app');
+  if (notifications && appRoot && notifications.parentElement !== document.body) document.body.insertBefore(notifications, appRoot);
 });
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -250,9 +253,12 @@ function setDialogAction(label, danger = false) {
   if (cancel) cancel.hidden = false;
   button.textContent = label;
   button.className = danger ? 'button-danger' : '';
+  button.formNoValidate = false;
   return button;
 }
 function openDialog(dialog) {
+  const notifications = document.querySelector('#notifications');
+  if (notifications && notifications.parentElement !== dialog) dialog.append(notifications);
   document.documentElement.classList.add('dialog-open');
   document.body.classList.add('dialog-open');
   dialog.showModal();
@@ -1121,14 +1127,16 @@ function xrayRealitySNIDialog(component) {
   const body = document.querySelector('#dialog-body');
   const form = document.querySelector('#dialog-form');
   document.querySelector('#dialog-title').textContent = `${component.name} settings`;
-  setDialogAction('Add SNI');
-  body.innerHTML = '<p class="muted">Loading REALITY SNI settings…</p>';
-  openDialog(dialog);
+  const save = setDialogAction('Save');
+  save.formNoValidate = true;
 
   const renderSettings = settings => {
-    if (generation !== dialogGeneration || !dialog.open) return;
+    if (generation !== dialogGeneration) return;
     const defaultSNI = String(settings?.default_sni || '');
     const target = String(settings?.target || '');
+    const separator = target.lastIndexOf(':');
+    const targetHost = separator > 0 ? target.slice(0, separator) : target;
+    const targetPort = separator > 0 ? target.slice(separator + 1) : '443';
     const names = Array.isArray(settings?.server_names) ? settings.server_names : [];
     const list = names.map(name => {
       const isDefault = name === defaultSNI;
@@ -1137,9 +1145,9 @@ function xrayRealitySNIDialog(component) {
     body.innerHTML = `
       <p class="settings-notice">${escapeHTML(GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
       <p class="muted">The default SNI remains in all generated profiles. Additional values become valid server-side choices for profiles edited manually in the client.</p>
-      <label>REALITY target<div class="settings-inline-control"><input data-reality-target type="text" maxlength="259" value="${escapeHTML(target)}" placeholder="www.googletagmanager.com:443" autocomplete="off"><button type="button" class="button-secondary" data-save-reality-target>Save target</button></div><small class="settings-warning">The target must be a TLS hostname on port 443. SBP probes it before applying it to an installed component, or during a later installation. Already imported profiles are not rewritten.</small></label>
+      <label>REALITY target<div class="settings-inline-control"><input data-reality-target-host type="text" maxlength="253" value="${escapeHTML(targetHost)}" placeholder="www.googletagmanager.com" autocomplete="off" required><input data-reality-target-port class="settings-port-input" type="number" min="1" max="65535" value="${escapeHTML(targetPort)}" aria-label="REALITY target port" required><button type="button" class="button-secondary" data-save-reality-target>Save target</button></div><small class="settings-warning">Hostname and TLS port are separate here. SBP probes the resulting endpoint before applying it to an installed component, or during a later installation. Already imported profiles are not rewritten.</small></label>
       <ul class="sni-list">${list}</ul>
-      <label>Add SNI<input id="xray-reality-sni" type="text" maxlength="253" placeholder="dl.google.com" autocomplete="off" required><small class="muted">Enter a hostname only. If installed, the selected Xray container briefly reconnects after a validated change. Otherwise the value is saved for installation.</small></label>`;
+      <label>Add SNI<div class="settings-inline-control"><input id="xray-reality-sni" type="text" maxlength="253" placeholder="dl.google.com" autocomplete="off" required><button type="submit" data-add-reality-sni>Add SNI</button></div><small class="muted">Enter a hostname only. If installed, the selected Xray container briefly reconnects after a validated change. Otherwise the value is saved for installation.</small></label>`;
     for (const remove of body.querySelectorAll('[data-remove-sni]')) {
       remove.onclick = async () => {
         const sni = remove.dataset.removeSni;
@@ -1154,9 +1162,10 @@ function xrayRealitySNIDialog(component) {
       };
     }
     body.querySelector('[data-save-reality-target]').onclick = async event => {
-      const input = body.querySelector('[data-reality-target]');
-      const value = input?.value.trim();
-      if (!value) return input?.focus();
+      const hostInput = body.querySelector('[data-reality-target-host]');
+      const portInput = body.querySelector('[data-reality-target-port]');
+      if (!hostInput?.reportValidity() || !portInput?.reportValidity()) return;
+      const value = `${hostInput.value.trim()}:${portInput.value.trim()}`;
       if (!confirm(`Change the REALITY target for “${component.name}” to “${value}”? Existing client profiles will not be rewritten.`)) return;
       try {
         await runPendingAction(`component:${component.id}:target`, event.currentTarget, 'Checking…', async () => {
@@ -1169,8 +1178,9 @@ function xrayRealitySNIDialog(component) {
   };
 
   form.onsubmit = async event => {
-    if (event.submitter?.value === 'cancel') return;
+    if (event.submitter?.value === 'cancel' || event.submitter?.id === 'dialog-ok') return;
     event.preventDefault();
+    if (!event.submitter?.matches('[data-add-reality-sni]')) return;
     const input = body.querySelector('#xray-reality-sni');
     if (!input?.reportValidity()) return;
     const submit = event.submitter || document.querySelector('#dialog-ok');
@@ -1185,7 +1195,11 @@ function xrayRealitySNIDialog(component) {
   };
 
   api(`/api/components/${component.id}/reality-sni`)
-    .then(result => renderSettings(result.settings))
+    .then(result => {
+      if (generation !== dialogGeneration) return;
+      renderSettings(result.settings);
+      openDialog(dialog);
+    })
     .catch(error => {
       if (generation === dialogGeneration && dialog.open) dialog.close();
       notifyError(error);

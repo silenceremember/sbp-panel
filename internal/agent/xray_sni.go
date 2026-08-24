@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -82,8 +83,12 @@ func defaultXrayRealitySNIOps() xrayRealitySNIOps {
 func normalizeXrayRealityTarget(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	host, port, err := net.SplitHostPort(value)
-	if err != nil || port != "443" {
-		return "", errors.New("REALITY target must use a complete DNS hostname and port 443, such as dl.google.com:443")
+	if err != nil {
+		return "", errors.New("REALITY target must use a complete DNS hostname and port, such as dl.google.com:443")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("REALITY target port must be between 1 and 65535")
 	}
 	host, err = normalizeXrayRealitySNI(host)
 	if err != nil {
@@ -92,7 +97,7 @@ func normalizeXrayRealityTarget(value string) (string, error) {
 	if net.ParseIP(host) != nil {
 		return "", errors.New("REALITY target must use a DNS hostname, not an IP address")
 	}
-	return net.JoinHostPort(host, "443"), nil
+	return net.JoinHostPort(host, strconv.Itoa(portNumber)), nil
 }
 
 func validateXrayRealityTargetReachability(target string) error {

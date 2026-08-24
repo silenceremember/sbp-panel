@@ -58,13 +58,13 @@ func testXraySNIOps(validate func(string) error, restart func(xrayVariant, map[s
 }
 
 func TestNormalizeXrayRealityTarget(t *testing.T) {
-	for input, want := range map[string]string{" DL.Google.COM:443 ": "dl.google.com:443", "xn--e1afmkfd.xn--p1ai:443": "xn--e1afmkfd.xn--p1ai:443"} {
+	for input, want := range map[string]string{" DL.Google.COM:443 ": "dl.google.com:443", "xn--e1afmkfd.xn--p1ai:8443": "xn--e1afmkfd.xn--p1ai:8443"} {
 		got, err := normalizeXrayRealityTarget(input)
 		if err != nil || got != want {
 			t.Fatalf("normalize target %q = %q, %v; want %q", input, got, err, want)
 		}
 	}
-	for _, input := range []string{"example.com", "https://example.com:443", "example.com:80", "127.0.0.1:443", "localhost:443"} {
+	for _, input := range []string{"example.com", "https://example.com:443", "example.com:0", "example.com:65536", "127.0.0.1:443", "localhost:443"} {
 		if _, err := normalizeXrayRealityTarget(input); err == nil {
 			t.Fatalf("invalid target %q was accepted", input)
 		}

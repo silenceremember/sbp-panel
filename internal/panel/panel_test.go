@@ -195,6 +195,11 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"componentTextSettingsDialog(component)",
 		"dockerSettingsDialog(component, d.containers)",
 		"readOnlyComponentSettingsDialog(component)",
+		"data-reality-target-host",
+		"data-reality-target-port",
+		"data-add-reality-sni",
+		"save.formNoValidate = true",
+		"dialog.append(notifications)",
 		"const settingsAction = buttonHTML('Settings'",
 		"/api/components/${component.id}/settings",
 	} {
@@ -206,10 +211,14 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		t.Fatal("dashboard JavaScript still contains a recommended badge")
 	}
 	stylesheet := readAsset("/app.css")
-	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px"} {
+	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "scrollbar-gutter: stable"} {
 		if !strings.Contains(stylesheet, expected) {
 			t.Fatalf("dashboard stylesheet is missing %q", expected)
 		}
+	}
+	markup := readAsset("/")
+	if !strings.Contains(markup, `value="cancel" class="button-secondary" formnovalidate`) {
+		t.Fatal("shared dialog Cancel button can still trigger required-field validation")
 	}
 }
 

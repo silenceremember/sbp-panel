@@ -75,6 +75,10 @@ body {
   background: var(--bg);
 }
 
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
   color: var(--text);
@@ -1112,6 +1116,10 @@ dialog::backdrop {
 .settings-inline-control input {
   min-width: 0;
   flex: 1 1 auto;
+}
+
+.settings-inline-control .settings-port-input {
+  flex: 0 0 90px;
 }
 
 .settings-inline-control button {
