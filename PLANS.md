@@ -72,8 +72,9 @@ Progress:
   DOM/CSS review and JavaScript syntax validation completed instead.
 - [x] Select stable feature version `1.2.0`; the user explicitly authorized
   release despite the documented local-browser visual-verification limitation.
-- [ ] Run the final release validation, inspect the intended diff, commit, tag,
-  push, and verify the GitHub Release workflow and published assets.
+- [x] Final release validation passed. Commit `d4f6625` and immutable tag
+  `v1.2.0` were pushed; both main and tag workflows succeeded. GitHub published
+  the stable latest release with the Linux amd64 ZIP and update metadata.
 
 Validation commands:
 
