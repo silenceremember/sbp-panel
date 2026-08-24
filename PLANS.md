@@ -6,37 +6,6 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
-### Publish stable v1.1.3 with a persistent toast layer
-
-Desired outcome: publish the dialog and notification stacking fix as stable
-v1.1.3, verify the generated release bundle, and only then mark v1.1.2 as a
-prerelease so the corrected build remains the stable latest release.
-
-Constraints and acceptance criteria:
-
-- Keep one persistent toast root above the custom modal stack. Opening or
-  closing a dialog must not recreate, reparent, or restart an active toast.
-- Leave the page scrollbar geometry unchanged. Wheel and touch scrolling over
-  the inert background do nothing while a dialog is open, while dialog and
-  notification content remain scrollable. Do not control scrollbar dragging.
-- Pass all applicable validation, publish a matching v1.1.3 commit and tag,
-  verify the workflow output and exact archive allowlist, then mark v1.1.2 as a
-  prerelease without deleting or moving either tag.
-
-Progress:
-
-- [x] Replace toast reparenting with a fixed z-index modal stack and inert
-  background content.
-- [x] Preserve the visible page scrollbar and block only background wheel and
-  touch scrolling.
-- [ ] Complete validation, publish and verify v1.1.3, then recategorize v1.1.2.
-
-Validation commands are the repository-wide release checks listed below.
-
-Recovery path: do not recategorize v1.1.2 until v1.1.3 is proven healthy. If
-the release workflow or artifact verification fails, leave v1.1.2 stable and
-publish a newer numeric fix rather than moving or reusing a tag.
-
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action
