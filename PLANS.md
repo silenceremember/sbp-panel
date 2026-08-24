@@ -6,37 +6,6 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
-### Publish the stable v1.1.2 settings-form fix
-
-Desired outcome: publish the simplified atomic Xray settings form and dialog
-close fixes as stable `v1.1.2`, then retain `v1.1.1` and its immutable tag as a
-GitHub prerelease so it is visibly superseded without losing rollback assets.
-
-Constraints and acceptance criteria:
-
-- Source version and tag both equal `1.1.2`; `Prerelease` remains false.
-- Commit only the intended settings form, bounded bulk API, validation tests,
-  plan, and version changes.
-- Run the complete applicable local validation, push the release commit and
-  matching new tag, and wait for both GitHub Actions workflows.
-- Verify the stable/latest category, archive allowlist, update metadata, size,
-  and SHA-256 digest before changing the previous release category.
-- Mark `v1.1.1` prerelease only after `v1.1.2` is proven healthy. Never delete,
-  move, or recreate either release tag.
-
-Progress:
-
-- [x] Confirmed the intended diff and selected patch version `1.1.2`.
-- [x] Run final release validation and inspect the staged diff. Formatting,
-  all Go tests, vet, both JavaScript syntax checks, deploy lifecycle assertions,
-  diff checks, release metadata, and archive allowlist checks pass locally.
-- [ ] Commit, tag, push, and verify the `v1.1.2` workflows and artifacts.
-- [ ] Mark `v1.1.1` prerelease and close this completed release plan.
-
-Recovery path: fix forward locally before tag publication. Once pushed, never
-move or reuse `v1.1.2`; any release defect gets a newer patch version. Keep
-`v1.1.1` stable until the replacement release and artifacts are verified.
-
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action
