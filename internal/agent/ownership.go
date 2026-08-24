@@ -71,14 +71,19 @@ func markComponentOwned(id string, previous map[string]string) error {
 }
 
 func componentOwnership(id string) (ownedComponent, bool) {
+	value, ok, _ := checkedComponentOwnership(id)
+	return value, ok
+}
+
+func checkedComponentOwnership(id string) (ownedComponent, bool, error) {
 	ownershipMu.Lock()
 	defer ownershipMu.Unlock()
 	manifest, err := loadOwnership(componentOwnershipPath)
 	if err != nil {
-		return ownedComponent{}, false
+		return ownedComponent{}, false, err
 	}
 	value, ok := manifest.Components[id]
-	return value, ok
+	return value, ok, nil
 }
 
 func clearComponentOwnership(id string) error {

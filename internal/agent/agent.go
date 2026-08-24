@@ -35,13 +35,14 @@ type CommandResult struct {
 	Error  string `json:"error,omitempty"`
 }
 type Discovery struct {
-	GeneratedAt     string      `json:"generated_at"`
-	OperatingSystem string      `json:"operating_system"`
-	DockerAvailable bool        `json:"docker_available"`
-	Containers      []string    `json:"containers"`
-	Kernel          string      `json:"kernel"`
-	Components      []Component `json:"components"`
-	Lifecycle       installJob  `json:"lifecycle"`
+	GeneratedAt     string             `json:"generated_at"`
+	OperatingSystem string             `json:"operating_system"`
+	DockerAvailable bool               `json:"docker_available"`
+	DockerCompose   DockerComposeState `json:"docker_compose"`
+	Containers      []string           `json:"containers"`
+	Kernel          string             `json:"kernel"`
+	Components      []Component        `json:"components"`
+	Lifecycle       installJob         `json:"lifecycle"`
 	images          map[string]bool
 }
 
@@ -603,6 +604,7 @@ func discover() Discovery {
 			}
 		}
 	}
+	d.DockerCompose = dockerComposeStatus(d.DockerAvailable)
 	d.Components = componentStates(d, kernelSetting("/proc/sys/net/ipv4/tcp_congestion_control") == "bbr")
 	return d
 }
@@ -665,8 +667,15 @@ func componentStates(d Discovery, bbr bool) []Component {
 		tweaksNote = "Detected outside SBP. It will not be changed or removed."
 	}
 	dockerNote := ""
-	if dockerExternal {
+	dockerComposePresent := d.DockerCompose.Managed || d.DockerCompose.External || d.DockerCompose.Installed || d.DockerCompose.InspectionFailed
+	if d.DockerCompose.InspectionFailed {
+		dockerNote = "Docker Compose v2 status could not be inspected."
+	} else if dockerExternal && dockerComposePresent {
+		dockerNote = "Remove Docker Compose v2 in Docker settings first."
+	} else if dockerExternal {
 		dockerNote = "Detected outside SBP. It will not be changed or removed."
+	} else if dockerComposePresent {
+		dockerNote = "Remove Docker Compose v2 in Docker settings first."
 	} else if d.DockerAvailable && (len(names) > 0 || len(d.images) > 0) {
 		dockerNote = "Remove all containers and images first."
 	}
@@ -709,7 +718,7 @@ func componentStates(d Discovery, bbr bool) []Component {
 	vkInstalled, vkExternal, vkNote := bypassState("vk")
 	return []Component{
 		{ID: "tweaks", Name: "Network tuning", Installed: tweaksOwned, External: tweaksExternal, CanRemoveExternal: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: tweaksOwned, Description: "Applies validated TCP congestion control and queue discipline settings at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
-		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
+		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal && !dockerComposePresent, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0 && !dockerComposePresent, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
 		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides an AmneziaWG 2.0 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
@@ -1243,6 +1252,9 @@ func uninstallDocker() (string, error) {
 	if !ok {
 		return "", errors.New("Docker was not installed by SBP and will not be removed")
 	}
+	if err := requireDockerComposeAbsent(); err != nil {
+		return "", err
+	}
 	if _, err := exec.LookPath("docker"); err == nil {
 		if err := requireEmptyDockerInventory(); err != nil {
 			return "", err
@@ -1582,12 +1594,20 @@ func slicesContains(values []string, wanted string) bool {
 }
 
 func removeExternalDocker(ops externalRemovalOps) (string, error) {
+	if _, managed, err := checkedComponentOwnership(dockerComposeComponentID); err != nil {
+		return "", fmt.Errorf("inspect Docker Compose v2 ownership before external Docker removal: %w", err)
+	} else if managed {
+		return "", errors.New("remove SBP-managed Docker Compose v2 in Docker settings first")
+	}
 	dockerPath, err := ops.lookPath("docker")
 	if err != nil {
 		return "", errors.New("external Docker is no longer installed")
 	}
 	if err := ops.dockerInventory(); err != nil {
 		return "", err
+	}
+	if output, composeErr := ops.run("docker", "compose", "version", "--short"); composeErr == nil && strings.TrimSpace(output) != "" {
+		return "", errors.New("remove the external Docker Compose CLI plugin before removing Docker")
 	}
 	ownerOutput, err := ops.run("dpkg-query", "-S", dockerPath)
 	if err != nil {
@@ -1603,6 +1623,9 @@ func removeExternalDocker(ops externalRemovalOps) (string, error) {
 	}
 	if _, ok := installed[owner]; !ok {
 		return "", errors.New("the Docker package inventory changed during removal")
+	}
+	if _, ok := installed[dockerComposePackageName]; ok {
+		return "", errors.New("remove external Docker Compose v2 before removing Docker")
 	}
 	activeOutput, _ := ops.run("systemctl", "is-active", "docker.service")
 	enabledOutput, _ := ops.run("systemctl", "is-enabled", "docker.service")
@@ -1641,7 +1664,9 @@ func removeExternalDocker(ops externalRemovalOps) (string, error) {
 }
 
 func removeExternalComponent(id string, _ config.Config) (string, error) {
-	if _, owned := componentOwnership(id); owned {
+	if _, owned, err := checkedComponentOwnership(id); err != nil {
+		return "", fmt.Errorf("inspect component ownership before external removal: %w", err)
+	} else if owned {
 		return "", errors.New("the component is managed by SBP; use ordinary removal")
 	}
 	ops := defaultExternalRemovalOps()
@@ -3056,6 +3081,43 @@ func Run(configPath string) error {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "job": inst.get(r.PathValue("id"))})
+	})
+	mux.HandleFunc("GET /v1/components/docker/compose", func(w http.ResponseWriter, r *http.Request) {
+		_, dockerErr := exec.LookPath("docker")
+		writeJSON(w, map[string]any{"ok": true, "compose": dockerComposeStatus(dockerErr == nil)})
+	})
+	mux.HandleFunc("POST /v1/components/docker/compose", func(w http.ResponseWriter, r *http.Request) {
+		if err := inst.startDockerComposeInstall(); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errLifecycleBusy) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "job": inst.get("docker")})
+	})
+	mux.HandleFunc("DELETE /v1/components/docker/compose", func(w http.ResponseWriter, r *http.Request) {
+		if err := inst.startDockerComposeUninstall(); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errLifecycleBusy) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "job": inst.get("docker")})
+	})
+	mux.HandleFunc("DELETE /v1/components/docker/compose/external", func(w http.ResponseWriter, r *http.Request) {
+		if err := inst.startDockerComposeExternalRemoval(); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errLifecycleBusy) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "job": inst.get("docker")})
 	})
 	mux.HandleFunc("GET /v1/components/{id}/settings", func(w http.ResponseWriter, r *http.Request) {
 		var state componentTextSettingsState

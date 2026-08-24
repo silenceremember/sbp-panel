@@ -146,7 +146,8 @@ function notify(message, type = 'info', title = '', options = {}) {
   const root = document.querySelector('#notifications');
   if (!root) return;
   const text = String(message || 'Done');
-  const noticeKey = `${type}\n${title}\n${text}\n${options.qr || ''}`;
+  const actionDefinitions = Array.isArray(options.actions) ? options.actions.filter(action => action?.label && typeof action.onClick === 'function') : [];
+  const noticeKey = `${type}\n${title}\n${text}\n${options.qr || ''}\n${actionDefinitions.map(action => action.label).join('|')}`;
   const duplicate = Array.from(root.children).find(item => item.dataset.noticeKey === noticeKey);
   if (duplicate) return duplicate;
   const labels = {success: 'Done', error: 'Error', warning: 'Warning', info: 'Information'};
@@ -195,6 +196,14 @@ function notify(message, type = 'info', title = '', options = {}) {
     notice.querySelector('.notification-message').textContent = text;
     bindCopy(notice.querySelector('.notification-copy'));
   }
+  const actionButtons = actionDefinitions.map(definition => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = definition.danger ? 'button-danger' : 'button-secondary';
+    button.textContent = definition.label;
+    notice.querySelector('.notification-actions').append(button);
+    return {button, onClick: definition.onClick};
+  });
   notice.append(close);
   root.append(notice);
   while (root.children.length > 5) root.firstElementChild.remove();
@@ -208,6 +217,18 @@ function notify(message, type = 'info', title = '', options = {}) {
     setTimeout(() => notice.remove(), 220);
   };
   close.onclick = dismiss;
+  for (const action of actionButtons) {
+    action.button.onclick = async () => {
+      if (action.button.disabled) return;
+      action.button.disabled = true;
+      dismiss();
+      try {
+        await action.onClick();
+      } catch (error) {
+        notifyError(error);
+      }
+    };
+  }
   const resume = () => { started = Date.now(); timer = setTimeout(dismiss, remaining); };
   notice.onmouseenter = () => { clearTimeout(timer); remaining -= Date.now() - started; };
   notice.onmouseleave = () => { if (remaining <= 0) dismiss(); else resume(); };
@@ -999,6 +1020,8 @@ async function runComponentLifecycle(component, button, operation) {
 
 function lifecyclePendingLabel(operation) {
   if (operation === 'install') return 'Installing…';
+  if (operation === 'compose-install') return 'Installing Compose…';
+  if (operation === 'compose-uninstall') return 'Removing Compose…';
   if (operation === 'external-remove') return 'Removing…';
   return 'Removing…';
 }
@@ -1008,6 +1031,8 @@ function setLifecycleControls(job) {
   const blocked = Boolean(activeLifecycle);
   const controls = [
     ...document.querySelectorAll('.component-actions button'),
+    ...document.querySelectorAll('#dialog button'),
+    ...document.querySelectorAll('#notifications .notification-actions button'),
     document.querySelector('#update-check'),
     document.querySelector('#update-prereleases')
   ].filter(Boolean);
@@ -1045,24 +1070,13 @@ function resumeLifecycle(job) {
   });
 }
 
-function externalRemovalDialog(component) {
-  const generation = ++dialogGeneration;
-  const dialog = document.querySelector('#dialog');
-  const body = document.querySelector('#dialog-body');
-  document.querySelector('#dialog-title').textContent = `Remove external ${component.name}?`;
-  setDialogAction('Remove external', true);
+function externalRemovalPrompt(component, control) {
   const warning = component.id === 'docker'
     ? 'SBP will remove an external Ubuntu docker.io package only if containers, images, volumes, and custom networks are all absent. External configuration and data directories are never deleted.'
     : 'SBP will remove exact BBR and fq assignments from detected sysctl configuration files, preserve every other setting, and then reset the active kernel values.';
-  body.innerHTML = `<p>${escapeHTML(warning)}</p><p class="muted">After removal, install the component again to make it fully managed by SBP.</p>`;
-  openDialog(dialog);
-  document.querySelector('#dialog-form').onsubmit = async event => {
-    if (event.submitter?.value === 'cancel') return;
-    event.preventDefault();
-    const submit = event.submitter || document.querySelector('#dialog-ok');
-    const removed = await runComponentLifecycle(component, submit, 'external-remove');
-    if (removed && generation === dialogGeneration && dialog.open) dialog.close();
-  };
+  notify(`${warning} After removal, install the component again to make it fully managed by SBP.`, 'warning', `Remove external ${component.name}?`, {
+    actions: [{label: 'Remove', danger: true, onClick: () => runComponentLifecycle(component, control, 'external-remove')}]
+  });
 }
 
 function bypassSettingsDialog(component) {
@@ -1261,23 +1275,86 @@ function readOnlyComponentSettingsDialog(component) {
   openDialog(dialog);
 }
 
-function dockerSettingsDialog(component, containers) {
+function dockerSettingsDialog(component, containers, composeState) {
   const dialog = document.querySelector('#dialog');
   const body = document.querySelector('#dialog-body');
   const form = document.querySelector('#dialog-form');
-  ++dialogGeneration;
+  const generation = ++dialogGeneration;
   document.querySelector('#dialog-title').textContent = `${component.name} settings`;
   setDialogAction('Close');
   const cancel = form.querySelector('[value="cancel"]');
   if (cancel) cancel.hidden = true;
-  const names = [...new Set((Array.isArray(containers) ? containers : [])
-    .map(name => String(name || '').trim())
-    .filter(Boolean))].sort((left, right) => left.localeCompare(right));
-  const inventory = names.length
-    ? `<ul class="container-list">${names.map(name => `<li><code>${escapeHTML(name)}</code></li>`).join('')}</ul>`
-    : '<p class="muted">No containers were detected.</p>';
-  body.innerHTML = `<p class="settings-notice">This is a read-only view of the containers currently reported by Docker. Container management remains in the owning component lifecycle.</p>${inventory}`;
   form.onsubmit = () => {};
+
+  const render = (containerValues, compose) => {
+    if (generation !== dialogGeneration) return;
+    const names = [...new Set((Array.isArray(containerValues) ? containerValues : [])
+      .map(name => String(name || '').trim())
+      .filter(Boolean))].sort((left, right) => left.localeCompare(right));
+    const inventory = names.length
+      ? `<ul class="container-list">${names.map(name => `<li><code>${escapeHTML(name)}</code></li>`).join('')}</ul>`
+      : '<p class="muted">No containers were detected.</p>';
+    const value = compose && typeof compose === 'object' ? compose : {};
+    const status = value.inspection_failed
+      ? '<span class="state-pill external">Unavailable</span>'
+      : value.external
+      ? '<span class="state-pill external">External</span>'
+      : value.installed ? '<span class="state-pill up">Installed</span>'
+        : value.managed ? '<span class="state-pill external">Repair required</span>'
+          : '<span class="state-pill">Not installed</span>';
+    const version = value.version ? `<span class="muted">Version ${escapeHTML(value.version)}</span>` : '';
+    let action = buttonHTML('Unavailable', 'secondary', 'type="button" data-compose-action disabled');
+    if (value.can_uninstall) action = buttonHTML('Remove', 'danger', 'type="button" data-compose-action data-compose-operation="compose-uninstall"');
+    else if (value.can_remove_external) action = buttonHTML('Remove', 'danger', 'type="button" data-compose-action data-compose-operation="compose-external-remove"');
+    else if (value.can_install) action = buttonHTML(value.managed ? 'Repair' : 'Install', 'primary', 'type="button" data-compose-action data-compose-operation="compose-install"');
+    body.innerHTML = `
+      <p class="settings-notice">Docker Compose v2 is managed as a separate Ubuntu package. SBP never adopts an external installation and removes one only when the exact Ubuntu package is verified.</p>
+      <section class="docker-compose-setting">
+        <div><div class="docker-compose-heading"><b>Docker Compose v2</b>${status}</div>${version}${value.note ? `<small>${escapeHTML(value.note)}</small>` : ''}</div>
+        ${action}
+      </section>
+      <div class="settings-subsection"><b>Container inventory</b><small class="muted">Read-only. Container management remains in the owning component lifecycle.</small></div>
+      ${inventory}`;
+
+    const control = body.querySelector('[data-compose-action]');
+    if (!control || control.disabled) return;
+    const runComposeLifecycle = async operation => {
+      const installing = operation === 'compose-install';
+      try {
+        await runPendingAction(`component:docker:${operation}`, control, installing ? 'Installing…' : 'Removing…', async () => {
+          const path = operation === 'compose-external-remove' ? '/api/components/docker/compose/external' : '/api/components/docker/compose';
+          await api(path, {method: installing ? 'POST' : 'DELETE'});
+          setLifecycleControls({component_id: 'docker', operation, status: 'running'});
+          await watchJob('docker', control, operation, {
+            throwOnError: true,
+            onDone: async completed => {
+              const refreshed = await api('/api/discovery');
+              await loadDiscovery({value: refreshed});
+              render(refreshed.containers, refreshed.docker_compose);
+              notify(completed.output || (installing ? 'Docker Compose v2 installed.' : 'Docker Compose v2 removed.'), 'success');
+            }
+          });
+        });
+      } catch (error) {
+        setLifecycleControls(null);
+        await loadDiscovery();
+        notifyError(error);
+      }
+    };
+    control.onclick = async () => {
+      const operation = control.dataset.composeOperation;
+      if (operation === 'compose-external-remove') {
+        notify('SBP will purge only the verified external Ubuntu docker-compose-v2 package. Other CLI plugins are never removed automatically.', 'warning', 'Remove external Docker Compose v2?', {
+          actions: [{label: 'Remove', danger: true, onClick: () => runComposeLifecycle(operation)}]
+        });
+        return;
+      }
+      if (operation !== 'compose-install' && !confirm('Remove Docker Compose v2? The Ubuntu docker-compose-v2 package installed by SBP will be removed.')) return;
+      await runComposeLifecycle(operation);
+    };
+  };
+
+  render(containers, composeState);
   openDialog(dialog);
 }
 
@@ -1316,12 +1393,12 @@ async function loadDiscovery(prefetched = null) {
         if (!component.can_install) { notify(component.note || 'Complete the setup section below first.', 'warning'); return; }
         await runComponentLifecycle(component, button, 'install');
       };
-      row.querySelector('[data-remove-external]')?.addEventListener('click', () => externalRemovalDialog(component));
+      row.querySelector('[data-remove-external]')?.addEventListener('click', event => externalRemovalPrompt(component, event.currentTarget));
       row.querySelector('[data-component-settings]')?.addEventListener('click', () => {
         if (isBypass) bypassSettingsDialog(component);
         else if (component.id === 'xray' || component.id === 'xray-xhttp') xrayRealitySNIDialog(component);
         else if (component.id === 'tweaks' || component.id === 'amneziawg') componentTextSettingsDialog(component);
-        else if (component.id === 'docker') dockerSettingsDialog(component, d.containers);
+        else if (component.id === 'docker') dockerSettingsDialog(component, d.containers, d.docker_compose);
         else readOnlyComponentSettingsDialog(component);
       });
       row.querySelector('[data-uninstall]')?.addEventListener('click', async event => {

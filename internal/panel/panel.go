@@ -131,6 +131,10 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("GET /api/components/{id}/install", auth(s.installStatus))
 	m.Handle("GET /api/components/{id}/settings", admin(s.componentSettings))
 	m.Handle("PUT /api/components/{id}/settings", admin(s.componentSettings))
+	m.Handle("GET /api/components/docker/compose", admin(s.dockerCompose))
+	m.Handle("POST /api/components/docker/compose", admin(s.dockerCompose))
+	m.Handle("DELETE /api/components/docker/compose", admin(s.dockerCompose))
+	m.Handle("DELETE /api/components/docker/compose/external", admin(s.dockerComposeExternal))
 	m.Handle("GET /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
 	m.Handle("POST /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
 	m.Handle("PUT /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
@@ -1286,6 +1290,16 @@ func (s *server) removeExternalComponent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.proxyAgent(w, r, http.MethodDelete, "/v1/components/"+id+"/external")
+}
+
+func (s *server) dockerCompose(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	s.proxyAgent(w, r, r.Method, "/v1/components/docker/compose")
+}
+
+func (s *server) dockerComposeExternal(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	s.proxyAgent(w, r, http.MethodDelete, "/v1/components/docker/compose/external")
 }
 
 func (s *server) componentSettings(w http.ResponseWriter, r *http.Request) {

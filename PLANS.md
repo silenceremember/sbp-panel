@@ -6,6 +6,93 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
+### Manage Docker Compose v2 from Docker settings
+
+Desired outcome: Docker Settings shows the Docker Compose v2 status and version
+and lets an administrator install or remove the Ubuntu 24.04
+`docker-compose-v2` package. These actions use the same global lifecycle lock,
+progress recovery after browser reload, and disabled controls as ordinary
+component installation and removal.
+
+Constraints and acceptance criteria:
+
+- Use only Ubuntu's `docker-compose-v2` package that integrates with the
+  existing `docker.io` installation. Do not add Docker's third-party apt
+  repository or manage the legacy Python `docker-compose` package.
+- Track Compose ownership separately from Docker. Never adopt an external
+  installation. External removal is allowed only for the exact installed
+  `docker-compose-v2` package; an unowned CLI plugin without that package is
+  reported but never removed automatically.
+- Installation requires an available Docker CLI, records whether the package
+  existed before mutation, validates `docker compose version --short`, and
+  rolls back a newly installed package if validation or ownership persistence
+  fails.
+- Managed removal verifies package removal and clears ownership only after
+  success. Verified external package removal uses its own allowlisted lifecycle
+  operation and never creates or clears SBP ownership. Docker removal must
+  refuse while managed or external Compose v2 remains.
+- Expose bounded, authenticated panel and allowlisted agent endpoints only for
+  status, install, and remove. Compose operations must serialize with component
+  lifecycle operations, settings mutations, and panel updates.
+- Keep Docker's existing read-only container inventory in the same dialog.
+  Show Compose state, version, ownership warnings, and one Install, Repair, or
+  Remove action as appropriate.
+- While Compose changes are running, block component, update, and dialog
+  controls through the existing lifecycle UI. A browser reload must show the
+  Docker row as active and resume polling the same job.
+- Every external-removal confirmation uses the ordinary notification toast
+  instead of a dialog. It keeps the standard notification lifetime, Copy, and
+  Close, and adds a Remove action that starts the existing globally locked
+  removal lifecycle.
+
+Implementation context:
+
+- Docker discovery, ownership, package lifecycle, and agent routes are in
+  `internal/agent/agent.go`, `internal/agent/ownership.go`, and
+  `internal/agent/lifecycle.go`.
+- Panel proxy routes are in `internal/panel/panel.go`.
+- Docker Settings and lifecycle controls are in
+  `internal/panel/web/app.js`; shared dialog styling is in `app.css`.
+
+Progress:
+
+- [x] Confirmed Ubuntu 24.04 provides `docker-compose-v2` and the resulting
+  command is `docker compose`.
+- [x] Traced Docker ownership, package rollback, global lifecycle locking,
+  browser-reload job recovery, and the existing read-only Docker dialog.
+- [x] Implement separately owned Compose status, install, repair, removal, and
+  Docker dependency refusal with focused tests.
+- [x] Add authenticated API routes and the Docker Settings controls with shared
+  lifecycle blocking and reload recovery.
+- [x] Update user documentation and run the complete automated validation set.
+- [x] Add verified external Compose package removal and migrate all external
+  removal confirmations from dialogs to standard actionable toasts.
+- [ ] Verify the Docker Settings dialog at normal and narrow widths on a live
+  panel. Local browser inspection was blocked by the browser URL policy; static
+  DOM/CSS review and JavaScript syntax validation completed instead.
+- [x] Select stable feature version `1.2.0`; the user explicitly authorized
+  release despite the documented local-browser visual-verification limitation.
+- [ ] Run the final release validation, inspect the intended diff, commit, tag,
+  push, and verify the GitHub Release workflow and published assets.
+
+Validation commands:
+
+```bash
+test -z "$(gofmt -l .)"
+go test ./...
+bash deploy/test_scripts.sh
+go vet ./...
+node --check internal/panel/web/app.js
+node --check internal/panel/web/check.js
+git diff --check
+```
+
+Recovery path: if installation fails before ownership is recorded, purge only
+the package proven absent before the operation. If removal fails, retain the
+ownership marker and report the exact failure. Never delete external CLI
+plugins or repositories. Do not publish a release until the feature and its
+rollback paths pass all checks.
+
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action

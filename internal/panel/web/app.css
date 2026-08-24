@@ -1129,6 +1129,47 @@ body.dialog-open::before {
   flex: 0 0 auto;
 }
 
+.docker-compose-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.docker-compose-setting > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.docker-compose-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.docker-compose-setting small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.docker-compose-setting button {
+  width: 94px;
+  flex: 0 0 auto;
+}
+
+.settings-subsection {
+  display: grid;
+  gap: 3px;
+  margin-top: var(--space-4);
+}
+
 .container-list {
   max-height: 320px;
   margin: 0;
@@ -1469,6 +1510,15 @@ body.dialog-open::before {
   .settings-inline-control {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .docker-compose-setting {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .docker-compose-setting button {
+    width: 100%;
   }
 }
 

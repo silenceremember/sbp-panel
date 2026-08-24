@@ -151,6 +151,117 @@ func TestInstallStatusIsNotCacheable(t *testing.T) {
 	}
 }
 
+func TestDockerComposeForwardingUsesExactAgentEndpoint(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			calls := 0
+			agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if request.Method != method || request.URL.RequestURI() != "/v1/components/docker/compose" {
+					t.Fatalf("agent request = %s %s", request.Method, request.URL.RequestURI())
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+			})}
+			s := &server{agent: agent}
+			request := httptest.NewRequest(method, "/api/components/docker/compose", nil)
+			response := httptest.NewRecorder()
+			s.dockerCompose(response, request)
+			if response.Code != http.StatusOK || calls != 1 {
+				t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+			}
+			if response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("Compose response is cacheable: %#v", response.Header())
+			}
+		})
+	}
+}
+
+func TestExternalDockerComposeRemovalUsesExactAgentEndpoint(t *testing.T) {
+	calls := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.Method != http.MethodDelete || request.URL.RequestURI() != "/v1/components/docker/compose/external" {
+			t.Fatalf("agent request = %s %s", request.Method, request.URL.RequestURI())
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+	})}
+	s := &server{agent: agent}
+	request := httptest.NewRequest(http.MethodDelete, "/api/components/docker/compose/external", nil)
+	response := httptest.NewRecorder()
+	s.dockerComposeExternal(response, request)
+	if response.Code != http.StatusOK || calls != 1 || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d body=%q calls=%d headers=%#v", response.Code, response.Body.String(), calls, response.Header())
+	}
+}
+
+func TestDockerComposeRoutesRequireAdminAndCSRF(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.Authenticate("admin", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrfToken, err := db.CreateSession(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+	})}
+	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/components/docker/compose", nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || calls != 0 {
+		t.Fatalf("unauthenticated read status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/components/docker/compose", nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("CSRF-free mutation status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/components/docker/compose", nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("authenticated mutation status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/components/docker/compose/external", nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || calls != 1 {
+		t.Fatalf("CSRF-free external removal status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/components/docker/compose/external", nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("authenticated external removal status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+	}
+}
+
 func TestDashboardClientLinksArePinnedAndProviderCredentialsMovedToSettings(t *testing.T) {
 	s := &server{}
 	mux := http.NewServeMux()
@@ -193,7 +304,13 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 	for _, expected := range []string{
 		"GLOBAL_COMPONENT_SETTINGS_NOTICE",
 		"componentTextSettingsDialog(component)",
-		"dockerSettingsDialog(component, d.containers)",
+		"dockerSettingsDialog(component, d.containers, d.docker_compose)",
+		"/api/components/docker/compose",
+		"compose-install",
+		"compose-uninstall",
+		"compose-external-remove",
+		"externalRemovalPrompt(component, event.currentTarget)",
+		"actions: [{label: 'Remove', danger: true",
 		"readOnlyComponentSettingsDialog(component)",
 		"data-reality-target-host",
 		"data-reality-target-port",
@@ -212,6 +329,9 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(javascript), "recommended") {
 		t.Fatal("dashboard JavaScript still contains a recommended badge")
+	}
+	if strings.Contains(javascript, "externalRemovalDialog") {
+		t.Fatal("external removal still opens a dedicated dialog")
 	}
 	for _, unstableNotificationLayer := range []string{"dialog.append(notifications)", "insertBefore(notifications"} {
 		if strings.Contains(javascript, unstableNotificationLayer) {

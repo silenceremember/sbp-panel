@@ -256,6 +256,8 @@ func TestExternalDockerRemovesOnlyVerifiedPackage(t *testing.T) {
 		run: func(name string, args ...string) (string, error) {
 			commands = append(commands, append([]string{name}, args...))
 			switch name {
+			case "docker":
+				return "", errors.New("Compose unavailable")
 			case "dpkg-query":
 				return "docker.io: /usr/bin/docker", nil
 			case "systemctl":
@@ -272,6 +274,7 @@ func TestExternalDockerRemovesOnlyVerifiedPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantCommands := [][]string{
+		{"docker", "compose", "version", "--short"},
 		{"dpkg-query", "-S", "/usr/bin/docker"},
 		{"systemctl", "is-active", "docker.service"},
 		{"systemctl", "is-enabled", "docker.service"},
@@ -288,6 +291,9 @@ func TestExternalDockerRejectsUnsupportedPackageOwner(t *testing.T) {
 		lookPath:        func(string) (string, error) { return "/usr/bin/docker", nil },
 		dockerInventory: func() error { return nil },
 		run: func(name string, args ...string) (string, error) {
+			if name == "docker" {
+				return "", errors.New("Compose unavailable")
+			}
 			if name == "dpkg-query" {
 				return "docker-ce-cli: /usr/bin/docker", nil
 			}
@@ -312,6 +318,8 @@ func TestExternalDockerRestoresServiceAfterPackageFailure(t *testing.T) {
 			commands = append(commands, append([]string{name}, args...))
 			signature := strings.Join(append([]string{name}, args...), " ")
 			switch signature {
+			case "docker compose version --short":
+				return "", errors.New("Compose unavailable")
 			case "dpkg-query -S /usr/bin/docker":
 				return "docker.io: /usr/bin/docker", nil
 			case "systemctl is-active docker.service":
@@ -339,6 +347,28 @@ func TestExternalDockerRestoresServiceAfterPackageFailure(t *testing.T) {
 	}
 	if len(commands) < len(wantTail) || !reflect.DeepEqual(commands[len(commands)-len(wantTail):], wantTail) {
 		t.Fatalf("service state was not restored: %#v", commands)
+	}
+}
+
+func TestExternalDockerRefusesExternalComposePlugin(t *testing.T) {
+	queries := 0
+	ops := externalRemovalOps{
+		lookPath:        func(string) (string, error) { return "/usr/bin/docker", nil },
+		dockerInventory: func() error { return nil },
+		run: func(name string, args ...string) (string, error) {
+			if name == "docker" && strings.Join(args, " ") == "compose version --short" {
+				return "v2.37.1", nil
+			}
+			queries++
+			return "", errors.New("unexpected command")
+		},
+	}
+	_, err := removeExternalDocker(ops)
+	if err == nil || !strings.Contains(err.Error(), "Compose CLI plugin") {
+		t.Fatalf("external Compose plugin was not refused: %v", err)
+	}
+	if queries != 0 {
+		t.Fatalf("Docker removal continued after Compose detection: %d commands", queries)
 	}
 }
 
