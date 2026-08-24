@@ -6,6 +6,37 @@ Code and tests remain the source of truth.
 
 ## Active plans
 
+### Publish stable v1.1.3 with a persistent toast layer
+
+Desired outcome: publish the dialog and notification stacking fix as stable
+v1.1.3, verify the generated release bundle, and only then mark v1.1.2 as a
+prerelease so the corrected build remains the stable latest release.
+
+Constraints and acceptance criteria:
+
+- Keep one persistent toast root above the custom modal stack. Opening or
+  closing a dialog must not recreate, reparent, or restart an active toast.
+- Leave the page scrollbar geometry unchanged. Wheel and touch scrolling over
+  the inert background do nothing while a dialog is open, while dialog and
+  notification content remain scrollable. Do not control scrollbar dragging.
+- Pass all applicable validation, publish a matching v1.1.3 commit and tag,
+  verify the workflow output and exact archive allowlist, then mark v1.1.2 as a
+  prerelease without deleting or moving either tag.
+
+Progress:
+
+- [x] Replace toast reparenting with a fixed z-index modal stack and inert
+  background content.
+- [x] Preserve the visible page scrollbar and block only background wheel and
+  touch scrolling.
+- [ ] Complete validation, publish and verify v1.1.3, then recategorize v1.1.2.
+
+Validation commands are the repository-wide release checks listed below.
+
+Recovery path: do not recategorize v1.1.2 until v1.1.3 is proven healthy. If
+the release workflow or artifact verification fails, leave v1.1.2 stable and
+publish a newer numeric fix rather than moving or reusing a tag.
+
 ### Make component settings persistent and available before installation
 
 Desired outcome: every component row exposes a consistent Settings action
@@ -43,6 +74,10 @@ Constraints and acceptance criteria:
   preservation, and responsive action layout already present in the dashboard.
   Explain once in every Settings dialog that component settings are global
   desired configuration and remain relevant independently of install state.
+- Keep one persistent notification root. Dialog open and close operations must
+  never reparent active toasts or restart their timers and animations; use a
+  stable z-index stack and inert background content without changing scrollbar
+  geometry.
 - Existing Xray SNI and routing-cookie settings remain isolated by component.
   Extend Xray desired SNI storage only as needed to make the existing dialog
   usable before install. A target change must remain variant-scoped, accept
@@ -87,8 +122,16 @@ Progress:
   pass locally.
 - [x] Polish the Xray dialog so data renders before the modal opens, the target
   uses separate hostname and port controls, Add SNI is its own action, footer
-  Save closes without validating an empty Add SNI field, the scrollbar gutter
-  remains stable, and notifications stay above the modal.
+  Save closes without validating an empty Add SNI field, and notifications stay
+  above the modal.
+- [x] Replace notification reparenting with a fixed modal z-index stack so
+  existing toasts remain stable while dialogs open and close. The background
+  is inert at z-index 900, dialogs use 910, and the single persistent toast
+  root remains at 1000. Escape and focus restoration are preserved. Formatting,
+  all Go tests, vet, JavaScript syntax, deploy assertions, and diff checks pass.
+- [x] Keep the existing scrollbar visible instead of hiding it or reserving a
+  gutter. Wheel and touch scrolling on the inert background are blocked while
+  dialog and toast content remain scrollable; scrollbar dragging is untouched.
 - [ ] Validate both settings dialogs at normal and narrow widths in an installed
   build. The local preview server was not running during the final browser
   check, so no visual result is claimed from that attempt.

@@ -14,6 +14,7 @@ let metricsRequestGeneration = 0;
 let discoveryGeneration = 0;
 let bypassRoomsGeneration = 0;
 let dialogGeneration = 0;
+let dialogReturnFocus = null;
 let lifecycleWatchGeneration = 0;
 let activeLifecycle = null;
 let bypassRooms = [];
@@ -44,10 +45,26 @@ document.querySelector('#dialog')?.addEventListener('close', () => {
   dialogGeneration++;
   document.documentElement.classList.remove('dialog-open');
   document.body.classList.remove('dialog-open');
-  const notifications = document.querySelector('#notifications');
-  const appRoot = document.querySelector('#app');
-  if (notifications && appRoot && notifications.parentElement !== document.body) document.body.insertBefore(notifications, appRoot);
+  app.inert = false;
+  if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus();
+  dialogReturnFocus = null;
 });
+
+document.addEventListener('keydown', event => {
+  const dialog = document.querySelector('#dialog');
+  if (event.key !== 'Escape' || !dialog?.open) return;
+  event.preventDefault();
+  dialog.close('cancel');
+});
+
+const blockBackgroundScroll = event => {
+  const dialog = document.querySelector('#dialog');
+  if (!dialog?.open || event.target.closest?.('#dialog, #notifications')) return;
+  event.preventDefault();
+};
+
+document.addEventListener('wheel', blockBackgroundScroll, {capture: true, passive: false});
+document.addEventListener('touchmove', blockBackgroundScroll, {capture: true, passive: false});
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -257,11 +274,11 @@ function setDialogAction(label, danger = false) {
   return button;
 }
 function openDialog(dialog) {
-  const notifications = document.querySelector('#notifications');
-  if (notifications && notifications.parentElement !== dialog) dialog.append(notifications);
+  dialogReturnFocus = document.activeElement;
+  app.inert = true;
   document.documentElement.classList.add('dialog-open');
   document.body.classList.add('dialog-open');
-  dialog.showModal();
+  dialog.show();
 }
 async function runPendingAction(key, control, pendingLabel, action) {
   if (pendingActions.has(key)) return false;

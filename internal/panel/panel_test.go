@@ -199,7 +199,10 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"data-reality-target-port",
 		"data-reality-additional-sni",
 		"server_names: serverNames",
-		"dialog.append(notifications)",
+		"app.inert = true",
+		"dialog.show()",
+		"blockBackgroundScroll",
+		"event.target.closest?.('#dialog, #notifications')",
 		"const settingsAction = buttonHTML('Settings'",
 		"/api/components/${component.id}/settings",
 	} {
@@ -210,6 +213,11 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 	if strings.Contains(strings.ToLower(javascript), "recommended") {
 		t.Fatal("dashboard JavaScript still contains a recommended badge")
 	}
+	for _, unstableNotificationLayer := range []string{"dialog.append(notifications)", "insertBefore(notifications"} {
+		if strings.Contains(javascript, unstableNotificationLayer) {
+			t.Fatalf("notification layer is still reparented by %q", unstableNotificationLayer)
+		}
+	}
 	for _, removed := range []string{"data-save-reality-target", "data-add-reality-sni"} {
 		if strings.Contains(javascript, removed) {
 			t.Fatalf("dashboard JavaScript still contains obsolete per-field action %q", removed)
@@ -219,10 +227,13 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		t.Fatal("REALITY target port does not use the spinner-free numeric text control")
 	}
 	stylesheet := readAsset("/app.css")
-	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "scrollbar-gutter: stable"} {
+	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "body.dialog-open::before", "z-index: 910"} {
 		if !strings.Contains(stylesheet, expected) {
 			t.Fatalf("dashboard stylesheet is missing %q", expected)
 		}
+	}
+	if strings.Contains(stylesheet, "scrollbar-gutter") || strings.Contains(stylesheet, "html.dialog-open,\nbody.dialog-open") {
+		t.Fatal("dialog styling still changes the page scrollbar geometry")
 	}
 	markup := readAsset("/")
 	if !strings.Contains(markup, `value="cancel" class="button-secondary" formnovalidate`) {

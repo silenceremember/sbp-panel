@@ -75,20 +75,11 @@ body {
   background: var(--bg);
 }
 
-html {
-  scrollbar-gutter: stable;
-}
-
 body {
   margin: 0;
   color: var(--text);
   font: 14px/1.45 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-html.dialog-open,
-body.dialog-open {
-  overflow: hidden;
 }
 
 a {
@@ -1061,15 +1052,27 @@ header {
 dialog {
   width: min(520px, calc(100vw - 30px));
   max-height: calc(100dvh - 30px);
+  position: fixed;
+  z-index: 910;
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  margin: 0;
   padding: 18px;
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--surface);
   color: var(--text);
+  transform: translate(-50%, -50%);
 }
 
-dialog::backdrop {
+body.dialog-open::before {
+  content: '';
+  position: fixed;
+  z-index: 900;
+  inset: 0;
   background: rgb(4 6 9 / 66%);
   backdrop-filter: blur(4px);
 }
