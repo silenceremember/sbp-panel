@@ -67,7 +67,7 @@ SBP provides a management layer around these upstream projects; it does not crea
 
 | Item | Requirement |
 |---|---|
-| Server | Fresh Ubuntu 24.04 LTS, Linux amd64 |
+| Server | Linux amd64; Ubuntu 24.04 LTS is recommended and tested. Other compatible distributions may work but are not officially supported |
 | Access | Root or sudo over SSH |
 | Network | Directly reachable public IPv4 address |
 | Minimum | 1 vCPU, 1 GB RAM, 10 GB SSD |
@@ -80,8 +80,7 @@ SBP provides a management layer around these upstream projects; it does not crea
 | 28443 | TCP | Xray XHTTP |
 | 48692 | UDP | AmneziaWG |
 
-> [!IMPORTANT]
-> SBP 1.x is installed on a fresh server and does not upgrade 0.x installations. Existing VPN software, containers, occupied ports, or custom networking are detected as external and are never adopted. A double-confirmed removal is available only for an empty Ubuntu `docker.io` installation and exact persistent BBR/fq sysctl assignments, so they can be replaced with SBP-managed components.
+A clean server is recommended. Existing VPN software, containers, occupied ports, and custom networking are treated as external and are not adopted by SBP.
 
 ## Install
 
@@ -89,15 +88,6 @@ Connect to the server over SSH and run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/silenceremember/sbp-panel/main/install.sh | sudo bash
-```
-
-Choose the latest stable release (the default) or the newest GitHub pre-release,
-then enter the administrator password twice. For unattended use, set
-`SBP_RELEASE_CHANNEL=stable` or `SBP_RELEASE_CHANNEL=prerelease` on the `bash`
-process. The installer never switches channels silently.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/silenceremember/sbp-panel/main/install.sh | sudo env SBP_RELEASE_CHANNEL=prerelease bash
 ```
 
 Then open:
@@ -187,13 +177,15 @@ bash deploy/test_scripts.sh
 
 ## Versioning
 
-| Version | Meaning |
-|---|---|
-| `0.0.1` | A compatible fix or small polish update |
-| `0.1.0` | A backwards-compatible feature release |
-| `1.0.0` | The first deliberately reviewed major baseline; later major changes may break compatibility |
+Versions use `X.Y.Z`:
 
-Testing builds keep an ordinary numeric version and are marked **Pre-release** on GitHub. They are working builds you can use while real-world testing finds the remaining issues. After the observation period, that GitHub release can be promoted to stable, or a newer numeric prerelease can be published.
+| Segment | Meaning |
+|---|---|
+| `X` | A major release that may break compatibility |
+| `Y` | A backwards-compatible feature release |
+| `Z` | A compatible fix or small polish update |
+
+**Pre-release builds are strongly discouraged for normal use.** They remain in the release history only for developer testing, investigation, and convenient downloads, and may contain bugs or incomplete work.
 
 ## Plans
 
