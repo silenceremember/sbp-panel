@@ -110,9 +110,9 @@ https://YOUR_SERVER_IP:9443
 4. Add a device and select its connection method.
 5. Copy the profile or scan its QR code and import it into a client.
 
-Profiles use the readable name `SBP · Group name · Device name`. Each profile also records its protocol version. **Edit** changes the device name, while **Update** refreshes its rendered profile with the current generator and preserves reusable identity material. Updating any AmneziaWG device rebuilds every AmneziaWG profile together so the server-wide client set remains on one generation. Copy or import a returned profile again when its rendered configuration changes.
+Profiles use the readable name `SBP · Group name · Device name`. Each profile also records its protocol version. **Edit** changes the device name. Recreate a device when it needs a newly issued profile.
 
-Routing integrations create one independent room for each device. A server upgraded from the former shared-room layout converts every affected profile in that group and provider together on the first **Update**, then removes the obsolete shared room after the replacements are stored.
+Routing integrations create one independent room for each new device. Historical shared-room devices are not migrated automatically; remove and recreate them when independent rooms are required.
 
 | Profile type | Suggested client |
 |---|---|
@@ -133,7 +133,7 @@ Routing integrations create one independent room for each device. A server upgra
 
 | Area | Behavior |
 |---|---|
-| Device changes | Edit changes the name; Update refreshes the rendered profile and protocol version; an AmneziaWG update publishes all AWG profiles together; runtime membership still changes live without restarting shared containers |
+| Device changes | Edit changes the name; recreate a device to issue a new profile; runtime membership changes live without restarting shared containers |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
 | Component lifecycle | An active install or removal is restored after a browser reload and conflicting component or update actions remain disabled until it finishes |
 | Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |

@@ -3,10 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"github.com/silenceremember/sbp-panel/internal/config"
 )
 
 func TestSavedBypassRoomsPreservesConfiguredRooms(t *testing.T) {
@@ -125,12 +122,5 @@ func TestBypassDeviceResourceNamesAreStableAndSeparated(t *testing.T) {
 	}
 	if first == second || filepath.Base(first) != "11" || filepath.Base(second) != "12" {
 		t.Fatalf("device paths are not separated: %q %q", first, second)
-	}
-}
-
-func TestProfileRefreshNeverDowngradesNewerGeneration(t *testing.T) {
-	_, err := refreshCredential("bypass-wb", "Phone", "wbstream://newer", 2, 7, 11, config.Config{})
-	if err == nil || !strings.Contains(err.Error(), "newer SBP release") {
-		t.Fatalf("newer profile was not protected from downgrade: %v", err)
 	}
 }

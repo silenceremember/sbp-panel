@@ -829,7 +829,7 @@ function deviceDialog(device) {
   body.innerHTML = `
     <label>Name<input id="device-name" value="${escapeHTML(device.name || 'Phone')}" required></label>
     <label>Protocol<select id="device-method" ${editing ? 'disabled' : ''}>${DEVICE_METHOD_OPTIONS.map(([id, label]) => `<option value="${id}" ${id === selectedMethod ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
-    ${editing ? '<small class="muted">Protocol and format are bound to the credential. Use Update in the device row to rebuild its client profile.</small>' : ''}`;
+    ${editing ? '<small class="muted">Protocol and format are bound to the credential. Recreate the device when a new profile is required.</small>' : ''}`;
   openDialog(dialog);
   document.querySelector('#dialog-form').onsubmit = async event => {
     if (event.submitter?.value === 'cancel') return;
@@ -928,7 +928,7 @@ function renderDevices(root, devices = []) {
     if (!row) {
       row = document.createElement('tr');
       row.dataset.deviceId = String(deviceID);
-      row.innerHTML = `<td><b data-device-name></b></td><td><span class="method" data-device-method></span></td><td data-device-traffic></td><td data-device-status></td><td><div class="device-actions">${buttonHTML('Copy', 'secondary', 'data-key')}${buttonHTML('Edit', 'secondary', 'data-edit')}${buttonHTML('Update', 'secondary', 'data-update')}${buttonHTML('Remove', 'danger', 'data-delete')}</div></td>`;
+      row.innerHTML = `<td><b data-device-name></b></td><td><span class="method" data-device-method></span></td><td data-device-traffic></td><td data-device-status></td><td><div class="device-actions">${buttonHTML('Copy', 'secondary', 'data-key')}${buttonHTML('Edit', 'secondary', 'data-edit')}${buttonHTML('Remove', 'danger', 'data-delete')}</div></td>`;
     }
     const revocable = device.method === 'xray' || device.method === 'xray-xhttp' || device.method === 'amneziawg';
     const toggleJob = deviceToggleJobs.get(deviceID);
@@ -962,24 +962,6 @@ function renderDevices(root, devices = []) {
       ).catch(notifyError);
     };
     row.querySelector('[data-edit]').onclick = () => deviceDialog(device);
-    row.querySelector('[data-update]').onclick = async event => {
-      try {
-        await runPendingAction(`device:${device.id}:profile:update`, event.currentTarget, 'Updating…', async () => {
-          const updated = await api(`/api/devices/${device.id}/profile`, {method: 'POST'});
-          await refreshGroups();
-          if (device.method.startsWith('bypass-')) await loadBypassRooms();
-          await copyCredential(device.name, updated.credential, device.id);
-          if (Number(updated.updated_profiles || 0) > 1) {
-            if (updated.update_scope === 'method') {
-              notify(`${updated.updated_profiles} AmneziaWG profiles were rebuilt together. Reimport any profile whose output changed.`, 'warning');
-            } else {
-              notify(`${updated.updated_profiles} shared routing profiles were replaced with independent device rooms. Recopy each affected profile.`, 'warning');
-            }
-          }
-          if (updated.warning) notify(updated.warning, 'warning');
-        });
-      } catch (e) { notifyError(e); }
-    };
     row.querySelector('[data-delete]').onclick = async event => {
       if (!confirm(`Remove device “${device.name}”? Its credentials will also be deleted.`)) return;
       try {
@@ -1592,7 +1574,7 @@ function renderBypassRooms(root, provider) {
     root.innerHTML = '<span class="muted">No saved rooms for this service.</span>';
     return;
   }
-  root.innerHTML = rooms.map(room => `<span><b>${escapeHTML(room.group_name)}</b>${room.device_name ? ` · ${escapeHTML(room.device_name)}` : ' · shared profile (refresh through Update)'} · <span class="saved-room-code">${escapeHTML(room.code)}</span></span>`).join('');
+  root.innerHTML = rooms.map(room => `<span><b>${escapeHTML(room.group_name)}</b>${room.device_name ? ` · ${escapeHTML(room.device_name)}` : ' · shared profile (recreate its devices)'} · <span class="saved-room-code">${escapeHTML(room.code)}</span></span>`).join('');
 }
 
 async function loadBypassRooms(prefetched = null) {
