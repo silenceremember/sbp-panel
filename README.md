@@ -116,9 +116,9 @@ Routing integrations create one independent room for each new device. Historical
 
 | Profile type | Suggested client |
 |---|---|
-| Xray TCP or XHTTP | [v2rayN 7.20.4](https://github.com/2dust/v2rayN/releases/tag/7.20.4) for Windows; [v2rayNG](https://github.com/2dust/v2rayNG) for Android |
-| AmneziaWG | [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client) |
-| Routing integrations | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) |
+| Xray TCP or XHTTP | [v2rayN 7.20.4](https://github.com/2dust/v2rayN/releases/tag/7.20.4) for Windows; [v2rayNG 2.2.6](https://github.com/2dust/v2rayNG/releases/tag/2.2.6) for Android |
+| AmneziaWG | [AmneziaVPN 4.8.21.0](https://github.com/amnezia-vpn/amnezia-client/releases/tag/4.8.21.0) for Windows or Android |
+| Routing integrations | [Whitelist Bypass 0.3.8](https://github.com/kulikov0/whitelist-bypass/releases/tag/v0.3.8) for Windows or Android |
 
 ## Operations
 
@@ -134,6 +134,7 @@ Routing integrations create one independent room for each new device. Historical
 | Area | Behavior |
 |---|---|
 | Device changes | Edit changes the name; recreate a device to issue a new profile; runtime membership changes live without restarting shared containers |
+| Component profile metadata | **Update** appears when device version labels differ from the installed managed component; one action records the current version for every profile of that method without changing profiles, keys, rooms, or containers |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
 | Component lifecycle | An active install or removal is restored after a browser reload and conflicting component or update actions remain disabled until it finishes |
 | Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |

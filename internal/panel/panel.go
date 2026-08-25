@@ -126,6 +126,7 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("POST /api/update", admin(s.applyUpdate))
 	m.Handle("GET /api/update/progress", auth(s.updateProgress))
 	m.Handle("POST /api/components/{id}/install", admin(s.installComponent))
+	m.Handle("POST /api/components/{id}/profile-version", admin(s.updateComponentProfileVersion))
 	m.Handle("DELETE /api/components/{id}", admin(s.uninstallComponent))
 	m.Handle("DELETE /api/components/{id}/external", admin(s.removeExternalComponent))
 	m.Handle("GET /api/components/{id}/install", auth(s.installStatus))
@@ -1270,6 +1271,25 @@ func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
 			if method == "" {
 				continue
 			}
+			profileVersion, _ := component["profile_version"].(string)
+			profileVersion = strings.TrimSpace(profileVersion)
+			installed, _ := component["installed"].(bool)
+			external, _ := component["external"].(bool)
+			canUpgrade, _ := component["can_update"].(bool)
+			if canUpgrade {
+				component["update_kind"] = "upgrade"
+			} else if installed && !external && profileVersion != "" {
+				count, err := s.db.CountProfilesNotAtVersion(method, profileVersion)
+				if err != nil {
+					fail(w, http.StatusInternalServerError, fmt.Errorf("inspect %s profile versions: %w", method, err))
+					return
+				}
+				if count > 0 {
+					component["can_update"] = true
+					component["update_kind"] = "metadata"
+					component["profiles_to_update"] = count
+				}
+			}
 			count, err := s.db.CountDevicesByMethod(method)
 			if err == nil && count > 0 {
 				component["can_uninstall"] = false
@@ -1420,6 +1440,69 @@ func (s *server) installStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.proxyAgent(w, r, "GET", "/v1/components/"+r.PathValue("id")+"/install")
 }
+
+type managedComponentProfileState struct {
+	ID             string `json:"id"`
+	Installed      bool   `json:"installed"`
+	External       bool   `json:"external"`
+	ProfileVersion string `json:"profile_version"`
+}
+
+func (s *server) componentProfileState(id string) (managedComponentProfileState, error) {
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/v1/discovery", nil)
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		return managedComponentProfileState{}, fmt.Errorf("agent unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return managedComponentProfileState{}, errors.New("agent could not verify the managed component")
+	}
+	var result struct {
+		Components []managedComponentProfileState `json:"components"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&result); err != nil {
+		return managedComponentProfileState{}, errors.New("agent returned invalid component inventory")
+	}
+	for _, component := range result.Components {
+		if component.ID == id {
+			return component, nil
+		}
+	}
+	return managedComponentProfileState{}, errors.New("unsupported component")
+}
+
+func (s *server) updateComponentProfileVersion(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	method := managedMethodByComponent[id]
+	if method == "" {
+		fail(w, http.StatusBadRequest, errors.New("this component does not create device profiles"))
+		return
+	}
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+	component, err := s.componentProfileState(id)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err)
+		return
+	}
+	version := strings.TrimSpace(component.ProfileVersion)
+	if !component.Installed || component.External || version == "" {
+		fail(w, http.StatusConflict, errors.New("the managed component is not installed or has no profile version"))
+		return
+	}
+	updated, err := s.db.SetProfilesVersion(method, version)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, fmt.Errorf("record %s profile version: %w", method, err))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	jsonOut(w, http.StatusOK, map[string]any{
+		"ok": true, "component_id": id, "protocol_version": version, "updated_profiles": updated,
+		"output": fmt.Sprintf("Recorded %s for %d %s profile(s). Profiles and keys were not changed.", version, updated, method),
+	})
+}
+
 func (s *server) uninstallComponent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if method := managedMethodByComponent[id]; method != "" {

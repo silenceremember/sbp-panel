@@ -88,7 +88,7 @@ function deviceMethodLabel(device) {
   let label = DEVICE_METHOD_NAMES[device.method] || device.method;
   if (device.method === 'amneziawg') label = device.format === 'app' ? 'AmneziaWG · AmneziaVPN' : 'AmneziaWG · external client';
   const version = String(device.protocol_version || '').trim();
-  return version ? `${label} · ${version}` : `${label} · refresh available`;
+  return version ? `${label} · ${version}` : `${label} · update available`;
 }
 
 function stopMetricsPolling() {
@@ -1020,6 +1020,30 @@ async function runComponentLifecycle(component, button, operation) {
   }
 }
 
+async function runComponentProfileVersionUpdate(component, button) {
+  try {
+    return await runPendingAction(
+      `component:${component.id}:profile-version`,
+      button,
+      'Updating…',
+      async () => {
+        setLifecycleControls({component_id: component.id, operation: 'update', status: 'running'});
+        try {
+          const updated = await api(`/api/components/${component.id}/profile-version`, {method: 'POST'});
+          await Promise.all([refreshGroups(), loadDiscovery()]);
+          notify(updated.output || `Profile version ${updated.protocol_version} recorded.`, 'success');
+        } finally {
+          setLifecycleControls(null);
+        }
+      }
+    );
+  } catch (error) {
+    setLifecycleControls(null);
+    notifyError(error);
+    return false;
+  }
+}
+
 function lifecyclePendingLabel(operation) {
   if (operation === 'install') return 'Installing…';
   if (operation === 'compose-install') return 'Installing Compose…';
@@ -1387,7 +1411,10 @@ async function loadDiscovery(prefetched = null) {
           : component.installed
             ? buttonHTML('Remove', 'danger', 'data-uninstall')
             : buttonHTML(component.can_install ? 'Install' : 'Unavailable', 'primary', `data-install ${component.can_install ? '' : 'disabled'}`.trim());
-      const action = settingsAction + lifecycleAction;
+      const updateAction = !componentIsActive && component.can_update
+        ? buttonHTML('Update', 'primary', 'data-component-update')
+        : '';
+      const action = settingsAction + updateAction + lifecycleAction;
       const blocker = component.note || (component.installed && !component.can_uninstall ? 'The component was detected but is not managed by the panel.' : '');
       row.innerHTML = `<td><b>${escapeHTML(component.name)}</b></td><td>${version}</td><td>${stateLabel}</td><td><div class="install-note"><span>${escapeHTML(component.description || 'Managed panel component.')}</span>${blocker ? `<strong>${escapeHTML(blocker)}</strong>` : ''}</div></td><td><div class="component-actions">${action}</div></td>`;
       const button = row.querySelector('[data-install]');
@@ -1396,6 +1423,7 @@ async function loadDiscovery(prefetched = null) {
         await runComponentLifecycle(component, button, 'install');
       };
       row.querySelector('[data-remove-external]')?.addEventListener('click', event => externalRemovalPrompt(component, event.currentTarget));
+      row.querySelector('[data-component-update]')?.addEventListener('click', event => runComponentProfileVersionUpdate(component, event.currentTarget));
       row.querySelector('[data-component-settings]')?.addEventListener('click', () => {
         if (isBypass) bypassSettingsDialog(component);
         else if (component.id === 'xray' || component.id === 'xray-xhttp') xrayRealitySNIDialog(component);
