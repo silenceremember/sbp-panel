@@ -22,9 +22,10 @@ func (s *server) processTrafficMetrics(body []byte) []byte {
 		} `json:"device_traffic"`
 		BypassRooms []struct {
 			GroupID  int64  `json:"group_id"`
+			DeviceID int64  `json:"device_id"`
 			Provider string `json:"provider"`
-			RXBytes  int64  `json:"rx_bytes"`
-			TXBytes  int64  `json:"tx_bytes"`
+			RXBytes  uint64 `json:"rx_bytes"`
+			TXBytes  uint64 `json:"tx_bytes"`
 		} `json:"bypass_rooms"`
 	}
 	if json.Unmarshal(body, &sample) != nil {
@@ -35,7 +36,9 @@ func (s *server) processTrafficMetrics(body []byte) []byte {
 		return withoutPublicTrafficIDs(body)
 	}
 	byPublicID := map[string][]store.Device{}
+	byID := make(map[int64]store.Device, len(devices))
 	for _, device := range devices {
+		byID[device.ID] = device
 		if publicID, ok := deviceTrafficPublicID(device); ok {
 			key := device.Method + "\x00" + publicID
 			byPublicID[key] = append(byPublicID[key], device)
@@ -57,16 +60,26 @@ func (s *server) processTrafficMetrics(body []byte) []byte {
 			"rx_bytes": traffic.RXBytes, "tx_bytes": traffic.TXBytes,
 		})
 	}
-	s.persistTrafficSample(sample.MonthKey, deviceSamples, sample.BypassRooms)
+	for _, traffic := range sample.BypassRooms {
+		device, ok := byID[traffic.DeviceID]
+		if !ok || device.GroupID != traffic.GroupID || device.Method != traffic.Provider ||
+			traffic.RXBytes > math.MaxInt64 || traffic.TXBytes > math.MaxInt64 {
+			continue
+		}
+		deviceSamples = append(deviceSamples, store.DeviceTrafficSample{
+			DeviceID: device.ID, GroupID: device.GroupID, Protocol: device.Method,
+			RXBytes: int64(traffic.RXBytes), TXBytes: int64(traffic.TXBytes),
+		})
+		managedDevices = append(managedDevices, map[string]any{
+			"device_id": device.ID, "group_id": device.GroupID,
+			"rx_bytes": traffic.RXBytes, "tx_bytes": traffic.TXBytes,
+		})
+	}
+	s.persistTrafficSample(sample.MonthKey, deviceSamples)
 	return managedTrafficResponse(body, managedDevices)
 }
 
-func (s *server) persistTrafficSample(month string, devices []store.DeviceTrafficSample, rooms []struct {
-	GroupID  int64  `json:"group_id"`
-	Provider string `json:"provider"`
-	RXBytes  int64  `json:"rx_bytes"`
-	TXBytes  int64  `json:"tx_bytes"`
-}) {
+func (s *server) persistTrafficSample(month string, devices []store.DeviceTrafficSample) {
 	s.metricsMu.Lock()
 	defer s.metricsMu.Unlock()
 	if !s.metricsSaved.IsZero() && time.Since(s.metricsSaved) < time.Minute {
@@ -74,11 +87,6 @@ func (s *server) persistTrafficSample(month string, devices []store.DeviceTraffi
 	}
 	if err := s.db.SetDeviceTrafficSamples(month, devices); err != nil {
 		return
-	}
-	for _, room := range rooms {
-		if err := s.db.SetGroupProtocolTraffic(room.GroupID, room.Provider, month, room.RXBytes, room.TXBytes); err != nil {
-			return
-		}
 	}
 	s.metricsSaved = time.Now()
 }
@@ -89,6 +97,7 @@ func managedTrafficResponse(body []byte, managed []map[string]any) []byte {
 		return body
 	}
 	delete(response, "device_traffic")
+	delete(response, "bypass_rooms")
 	if managed != nil {
 		response["managed_devices"] = managed
 	}

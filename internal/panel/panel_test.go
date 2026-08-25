@@ -847,6 +847,49 @@ func TestProcessTrafficMetricsMapsManagedDevicesWithoutExposingPublicIDs(t *test
 	}
 }
 
+func TestProcessTrafficMetricsAttributesDedicatedBypassRoomToDevice(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Routing", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID, err := db.CreateDevice(groupID, "Phone", "bypass-wb", "wbstream://room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &server{db: db}
+	body := []byte(fmt.Sprintf(`{"month_key":%q,"bypass_rooms":[{"group_id":%d,"device_id":%d,"provider":"bypass-wb","rx_bytes":400,"tx_bytes":50},{"group_id":%d,"device_id":%d,"provider":"bypass-vk","rx_bytes":999,"tx_bytes":999}]}`, time.Now().UTC().Format("2006-01"), groupID, deviceID, groupID, deviceID))
+	processed := s.processTrafficMetrics(body)
+	if strings.Contains(string(processed), "bypass_rooms") {
+		t.Fatalf("response exposed raw bypass metrics: %s", processed)
+	}
+	var response struct {
+		Managed []struct {
+			DeviceID int64  `json:"device_id"`
+			RXBytes  uint64 `json:"rx_bytes"`
+			TXBytes  uint64 `json:"tx_bytes"`
+		} `json:"managed_devices"`
+	}
+	if err := json.Unmarshal(processed, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Managed) != 1 || response.Managed[0].DeviceID != deviceID || response.Managed[0].RXBytes != 400 || response.Managed[0].TXBytes != 50 {
+		t.Fatalf("managed bypass traffic = %#v", response.Managed)
+	}
+	devices, err := db.ListDevices(groupID)
+	if err != nil || len(devices) != 1 || devices[0].RXBytes != 400 || devices[0].TXBytes != 50 {
+		t.Fatalf("stored bypass traffic = %#v, %v", devices, err)
+	}
+	groups, err := db.ListGroups()
+	if err != nil || len(groups) != 1 || groups[0].RXBytes != 400 || groups[0].TXBytes != 50 {
+		t.Fatalf("rolled-up bypass traffic = %#v, %v", groups, err)
+	}
+}
+
 func TestNativeCredentialUnchanged(t *testing.T) {
 	native := "[Interface]\nPrivateKey = secret\n"
 	if got := displayCredential(store.Device{Method: "amneziawg", Format: "native", Credential: native}); got != native {

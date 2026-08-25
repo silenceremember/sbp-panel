@@ -749,7 +749,7 @@ func (s *Store) SetDeviceTrafficSamples(month string, samples []DeviceTrafficSam
 	}
 	affected := map[groupMethod]bool{}
 	for _, sample := range samples {
-		if sample.DeviceID < 1 || sample.GroupID < 1 || (sample.Protocol != "xray" && sample.Protocol != "xray-xhttp" && sample.Protocol != "amneziawg") || sample.RXBytes < 0 || sample.TXBytes < 0 {
+		if sample.DeviceID < 1 || sample.GroupID < 1 || !validMethod(sample.Protocol) || sample.RXBytes < 0 || sample.TXBytes < 0 {
 			return errors.New("invalid device traffic sample")
 		}
 		if _, err := tx.Exec(`INSERT INTO traffic_current(scope_type,scope_id,protocol,month_key,rx_bytes,tx_bytes) VALUES('device',?,?,?,?,?) ON CONFLICT(scope_type,scope_id,protocol) DO UPDATE SET month_key=excluded.month_key,rx_bytes=excluded.rx_bytes,tx_bytes=excluded.tx_bytes`, sample.DeviceID, "all", month, sample.RXBytes, sample.TXBytes); err != nil {

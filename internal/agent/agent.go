@@ -75,6 +75,7 @@ type ServerMetrics struct {
 
 type BypassRoomMetrics struct {
 	GroupID  int64  `json:"group_id"`
+	DeviceID int64  `json:"device_id"`
 	Provider string `json:"provider"`
 	RXBytes  uint64 `json:"rx_bytes"`
 	TXBytes  uint64 `json:"tx_bytes"`
@@ -130,7 +131,7 @@ const (
 	maxTrafficMeterBytes   = 8 << 20
 )
 
-var bypassRoomContainerName = regexp.MustCompile(`^vpn-panel-bypass-(wb|telemost|dion|vk)-g([0-9]+)(?:-d[0-9]+)?$`)
+var bypassRoomContainerName = regexp.MustCompile(`^vpn-panel-bypass-(wb|telemost|dion|vk)-g([1-9][0-9]*)-d([1-9][0-9]*)$`)
 
 func newServerMonitor(path string) *serverMonitor {
 	m := &serverMonitor{path: path, activeRooms: map[string]bool{}}
@@ -321,26 +322,23 @@ func (m *serverMonitor) measure(persist bool) ServerMetrics {
 	if txEnd >= txStart {
 		result.TXBytesPerSecond = (txEnd - txStart) * 4
 	}
-	roomTotals := map[string]BypassRoomMetrics{}
 	for name, room := range state.Rooms {
 		if !activeRooms[name] {
 			continue
 		}
 		match := bypassRoomContainerName.FindStringSubmatch(name)
-		if len(match) != 3 {
+		if len(match) != 4 {
 			continue
 		}
 		groupID, _ := strconv.ParseInt(match[2], 10, 64)
-		key := match[1] + ":" + match[2]
-		total := roomTotals[key]
-		total.GroupID = groupID
-		total.Provider = "bypass-" + match[1]
-		total.RXBytes += room.RXBytes
-		total.TXBytes += room.TXBytes
-		roomTotals[key] = total
-	}
-	for _, total := range roomTotals {
-		result.BypassRooms = append(result.BypassRooms, total)
+		deviceID, _ := strconv.ParseInt(match[3], 10, 64)
+		if groupID < 1 || deviceID < 1 {
+			continue
+		}
+		result.BypassRooms = append(result.BypassRooms, BypassRoomMetrics{
+			GroupID: groupID, DeviceID: deviceID, Provider: "bypass-" + match[1],
+			RXBytes: room.RXBytes, TXBytes: room.TXBytes,
+		})
 	}
 	for key, meter := range state.Devices {
 		protocol, publicID, ok := strings.Cut(key, ":")
@@ -357,7 +355,7 @@ func (m *serverMonitor) measure(persist bool) ServerMetrics {
 	})
 	sort.Slice(result.BypassRooms, func(i, j int) bool {
 		if result.BypassRooms[i].GroupID == result.BypassRooms[j].GroupID {
-			return result.BypassRooms[i].Provider < result.BypassRooms[j].Provider
+			return result.BypassRooms[i].DeviceID < result.BypassRooms[j].DeviceID
 		}
 		return result.BypassRooms[i].GroupID < result.BypassRooms[j].GroupID
 	})
@@ -737,10 +735,10 @@ func componentStates(d Discovery, bbr bool) []Component {
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", ProfileVersion: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", ProfileVersion: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
 		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, ProfileVersion: "2.0", Description: "Provides an AmneziaWG 2.0 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
-		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated WB Stream connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: wbNote},
-		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated Yandex Telemost connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
-		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated DION connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: dionNote},
-		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated VK Calls connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: vkNote},
+		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated WB Stream connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: wbNote},
+		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated Yandex Telemost connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
+		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated DION connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: dionNote},
+		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated VK Calls connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: vkNote},
 	}
 }
 

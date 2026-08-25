@@ -43,6 +43,22 @@ func TestLimitTrafficMetersBoundsPersistentState(t *testing.T) {
 	}
 }
 
+func TestBypassTrafficContainerRequiresDedicatedDevice(t *testing.T) {
+	match := bypassRoomContainerName.FindStringSubmatch("vpn-panel-bypass-vk-g7-d11")
+	if len(match) != 4 || match[1] != "vk" || match[2] != "7" || match[3] != "11" {
+		t.Fatalf("dedicated room match = %#v", match)
+	}
+	for _, name := range []string{
+		"vpn-panel-bypass-vk-g7",
+		"vpn-panel-bypass-vk-g7-d11-init",
+		"vpn-panel-bypass-vk-g0-d11",
+	} {
+		if bypassRoomContainerName.MatchString(name) {
+			t.Fatalf("non-device room %q was accepted for traffic attribution", name)
+		}
+	}
+}
+
 func TestCPUPercent(t *testing.T) {
 	got := cpuPercent(cpuCounters{total: 100, idle: 40}, cpuCounters{total: 200, idle: 65})
 	if got != 75 {
