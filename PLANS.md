@@ -28,8 +28,10 @@ Code and tests remain the source of truth.
   `internal/store/store.go` persists device and group rollups;
   `internal/panel/web/app.js` renders live traffic; `README.md` documents the
   scope. Tests live alongside these packages.
-- Progress: repository and both release lines inspected; current loss of
-  attribution confirmed in the monitoring regex and group/provider aggregation.
+- Progress: stable v1.3.3 passed local and GitHub validation, was published as
+  a normal release, and its allowlisted archive and update manifest were
+  audited. Prerelease v1.4.2 passed the complete local validation set;
+  publication and its release audit remain.
 - Validation: run formatting, all Go tests, lifecycle shell tests, Go vet, both
   JavaScript syntax checks, and `git diff --check`; inspect each release-line
   diff against its predecessor, then review both GitHub Actions release results.
