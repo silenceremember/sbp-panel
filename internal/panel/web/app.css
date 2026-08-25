@@ -681,7 +681,7 @@ header {
 }
 
 .components-table th:nth-child(5) {
-  width: 226px;
+	width: 320px;
 }
 
 .components-table th:last-child,

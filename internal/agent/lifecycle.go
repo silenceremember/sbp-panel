@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -20,6 +21,9 @@ func acquireLifecycle(owner string) error {
 	defer lifecycleState.Unlock()
 	if lifecycleState.active != "" {
 		return fmt.Errorf("%w: %s", errLifecycleBusy, lifecycleState.active)
+	}
+	if amneziaWGComponentUpdatePending() && !strings.HasPrefix(owner, "amneziawg-update-finalize:") {
+		return fmt.Errorf("%w: amneziawg-update", errLifecycleBusy)
 	}
 	if _, err := os.Lstat(updateTransactionPath); err == nil {
 		return fmt.Errorf("%w: update recovery is in progress", errLifecycleBusy)

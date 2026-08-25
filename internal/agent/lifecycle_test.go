@@ -62,8 +62,10 @@ func useTemporaryLifecycleState(t *testing.T) {
 	t.Helper()
 	originalTransaction := updateTransactionPath
 	originalProgress := updateProgressPath
+	originalAmneziaWGSnapshot := amneziaWGUpdateSnapshotPath
 	updateTransactionPath = filepath.Join(t.TempDir(), "update-transaction.json")
 	updateProgressPath = filepath.Join(t.TempDir(), "update-progress.json")
+	amneziaWGUpdateSnapshotPath = filepath.Join(t.TempDir(), "amneziawg-component-update.json")
 	lifecycleState.Lock()
 	lifecycleState.active = ""
 	lifecycleState.Unlock()
@@ -73,6 +75,7 @@ func useTemporaryLifecycleState(t *testing.T) {
 	t.Cleanup(func() {
 		updateTransactionPath = originalTransaction
 		updateProgressPath = originalProgress
+		amneziaWGUpdateSnapshotPath = originalAmneziaWGSnapshot
 		lifecycleState.Lock()
 		lifecycleState.active = ""
 		lifecycleState.Unlock()
@@ -113,6 +116,20 @@ func TestLifecycleGateHonorsDurableUpdateTransaction(t *testing.T) {
 	if err := acquireLifecycle("component:test"); !errors.Is(err, errLifecycleBusy) {
 		t.Fatalf("durable update transaction did not block a lifecycle operation: %v", err)
 	}
+}
+
+func TestLifecycleGateHonorsPendingAmneziaWGComponentUpdate(t *testing.T) {
+	useTemporaryLifecycleState(t)
+	if err := os.WriteFile(amneziaWGUpdateSnapshotPath, []byte(`{"token":"pending"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := acquireLifecycle("component:xray"); !errors.Is(err, errLifecycleBusy) {
+		t.Fatalf("pending AmneziaWG update did not block another lifecycle operation: %v", err)
+	}
+	if err := acquireLifecycle("amneziawg-update-finalize:rollback"); err != nil {
+		t.Fatalf("pending AmneziaWG update blocked its own recovery: %v", err)
+	}
+	releaseLifecycle("amneziawg-update-finalize:rollback")
 }
 
 func TestInstallerReportsAndDeduplicatesActiveLifecycle(t *testing.T) {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,17 +11,20 @@ import (
 )
 
 type amneziaWGServerSettings struct {
-	Jc   int
-	Jmin int
-	Jmax int
-	S1   int
-	S2   int
-	S3   int
-	S4   int
-	H1   string
-	H2   string
-	H3   string
-	H4   string
+	Jc                  int
+	Jmin                int
+	Jmax                int
+	S1                  int
+	S2                  int
+	S3                  int
+	S4                  int
+	H1                  string
+	H2                  string
+	H3                  string
+	H4                  string
+	HeaderProtectionKey string
+	RandomTrailers      string
+	DisableCookies      string
 }
 
 type amneziaWGSettingsApplyOps struct {
@@ -30,7 +34,12 @@ type amneziaWGSettingsApplyOps struct {
 	replaceMetadata func([]byte) error
 }
 
-var amneziaWGSettingOrder = []string{"Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"}
+var amneziaWGSettingOrder = []string{
+	"Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4",
+	"HeaderProtectionKey", "RandomTrailers", "DisableCookies",
+}
+
+var amneziaWG3SettingOrder = amneziaWGSettingOrder[11:]
 
 func defaultAmneziaWGServerSettingsContent() string {
 	var result strings.Builder
@@ -42,14 +51,22 @@ func defaultAmneziaWGServerSettingsContent() string {
 }
 
 func canonicalAmneziaWGServerSettings(settings amneziaWGServerSettings) string {
-	return fmt.Sprintf(
+	base := fmt.Sprintf(
 		"Jc = %d\nJmin = %d\nJmax = %d\nS1 = %d\nS2 = %d\nS3 = %d\nS4 = %d\nH1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n",
 		settings.Jc, settings.Jmin, settings.Jmax, settings.S1, settings.S2, settings.S3, settings.S4,
 		settings.H1, settings.H2, settings.H3, settings.H4,
 	)
+	if strings.TrimSpace(settings.HeaderProtectionKey) == "" {
+		return base
+	}
+	return base + fmt.Sprintf("HeaderProtectionKey = %s\nRandomTrailers = %s\nDisableCookies = %s\n", settings.HeaderProtectionKey, settings.RandomTrailers, settings.DisableCookies)
 }
 
-func amneziaWGSettingsFromGenerated(generated amneziaWG2Settings) (amneziaWGServerSettings, error) {
+func amneziaWGClientSettings(settings amneziaWGServerSettings) string {
+	return canonicalAmneziaWGServerSettings(settings) + "I1 = " + amneziaWG2DefaultI1 + "\n"
+}
+
+func amneziaWGSettingsFromGenerated(generated generatedAmneziaWGSettings) (amneziaWGServerSettings, error) {
 	return parseAmneziaWGServerSettings(generated.server, nil)
 }
 
@@ -79,7 +96,12 @@ func validateAmneziaWGServerSettings(settings amneziaWGServerSettings) error {
 	if settings.Jmin < 0 || settings.Jmin > 1280 || settings.Jmax <= settings.Jmin || settings.Jmax > 1280 {
 		return errors.New("Jmin and Jmax must satisfy 0 <= Jmin < Jmax <= 1280")
 	}
-	if settings.S1 < 15 || settings.S1 >= 150 || settings.S2 < 15 || settings.S2 >= 150 || settings.S3 < 0 || settings.S3 >= 64 || settings.S4 < 0 || settings.S4 >= 20 {
+	awg3 := strings.TrimSpace(settings.HeaderProtectionKey) != ""
+	if awg3 {
+		if settings.S1 < 12 || settings.S1 >= 150 || settings.S2 < 12 || settings.S2 >= 150 || settings.S3 < 12 || settings.S3 >= 64 || settings.S4 < 12 || settings.S4 >= 20 {
+			return errors.New("AWG 3.1 requires S1/S2 to be 12-149, S3 to be 12-63, and S4 to be 12-19")
+		}
+	} else if settings.S1 < 15 || settings.S1 >= 150 || settings.S2 < 15 || settings.S2 >= 150 || settings.S3 < 0 || settings.S3 >= 64 || settings.S4 < 0 || settings.S4 >= 20 {
 		return errors.New("S1/S2 must be 15-149, S3 must be 0-63, and S4 must be 0-19")
 	}
 	values := []int{settings.S1, settings.S2, settings.S3, settings.S4}
@@ -105,8 +127,20 @@ func validateAmneziaWGServerSettings(settings amneziaWGServerSettings) error {
 		}
 		previousMaximum = maximum
 	}
+	if !awg3 {
+		return nil
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(settings.HeaderProtectionKey))
+	if err != nil || len(key) != 32 {
+		return errors.New("HeaderProtectionKey must be a 32-byte base64 key")
+	}
+	if !amneziaWGToggle(settings.RandomTrailers) || !amneziaWGToggle(settings.DisableCookies) {
+		return errors.New("RandomTrailers and DisableCookies must be on or off")
+	}
 	return nil
 }
+
+func amneziaWGToggle(value string) bool { return value == "on" || value == "off" }
 
 func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSettings) (amneziaWGServerSettings, error) {
 	settings := amneziaWGServerSettings{}
@@ -144,7 +178,7 @@ func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSetti
 			}
 			continue
 		}
-		if strings.HasPrefix(key, "H") {
+		if key == "H1" || key == "H2" || key == "H3" || key == "H4" {
 			switch key {
 			case "H1":
 				settings.H1 = value
@@ -155,6 +189,17 @@ func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSetti
 			case "H4":
 				settings.H4 = value
 			}
+			continue
+		}
+		switch key {
+		case "HeaderProtectionKey":
+			settings.HeaderProtectionKey = value
+			continue
+		case "RandomTrailers":
+			settings.RandomTrailers = value
+			continue
+		case "DisableCookies":
+			settings.DisableCookies = value
 			continue
 		}
 		number, err := strconv.Atoi(value)
@@ -179,7 +224,14 @@ func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSetti
 		}
 	}
 	if defaults == nil {
-		for _, key := range amneziaWGSettingOrder {
+		required := amneziaWGSettingOrder[:11]
+		for _, key := range amneziaWG3SettingOrder {
+			if seen[key] {
+				required = amneziaWGSettingOrder
+				break
+			}
+		}
+		for _, key := range required {
 			if !seen[key] {
 				return amneziaWGServerSettings{}, fmt.Errorf("%s is missing", key)
 			}
@@ -192,7 +244,7 @@ func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSetti
 }
 
 func generatedAmneziaWGServerSettings() (amneziaWGServerSettings, error) {
-	generated, err := newAmneziaWG2Settings()
+	generated, err := newAmneziaWG3Settings()
 	if err != nil {
 		return amneziaWGServerSettings{}, err
 	}

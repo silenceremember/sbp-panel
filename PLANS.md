@@ -65,14 +65,16 @@ Progress and decisions:
 - [x] Published stable `v1.3.1` with only the device Update and migration
   cleanup; AWG remains at protocol 2.0 with AmneziaVPN 4.8.21.0. Release CI and
   the release allowlist, digest, size, and updater metadata were verified.
-- [ ] Verify exact AWG 3.1 config keys, defaults, and client serialization from
-  the AmneziaVPN 5.0.1.5 and amneziawg-go sources.
+- [x] Verified the AWG 3.1 config keys, client serialization, pinned engine tag,
+  and the AmneziaVPN 5.0.1.5 Windows asset against the upstream releases and
+  sources.
 - [x] Chose conservative AWG 3.1 defaults instead of copying every experimental
   upstream default.
-- [ ] Implement component-level rebuild, key rotation, publication, and
-  rollback; remove per-device Update.
-- [ ] Update the UI, client links, version labels, and documentation.
-- [ ] Run the complete validation set and inspect the intended diff.
+- [x] Implemented component-level rebuild, key rotation, atomic profile
+  publication, durable rollback state, retry/recovery, and removal of the
+  per-device Update path.
+- [x] Updated the UI, client links, version labels, and documentation.
+- [x] Ran the complete validation set and inspected the intended diff.
 - [ ] Commit, tag, publish the prerelease, monitor CI, and audit its assets.
 
 Validation:

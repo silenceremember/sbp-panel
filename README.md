@@ -58,7 +58,7 @@ This example is from an earlier release, so some labels and versions may differ 
 | Docker | Ubuntu package | Isolated managed services |
 | [Xray](https://github.com/XTLS/Xray-core) | 26.3.27 | VLESS over TCP with REALITY and XTLS Vision |
 | [Xray](https://github.com/XTLS/Xray-core) XHTTP | 26.3.27 | VLESS over XHTTP with REALITY |
-| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | 3.1.20260814 | AmneziaWG 2.0 server and device profiles |
+| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | Protocol 3.1; engine 3.1.20260814 | AmneziaWG server and device profiles with conservative obfuscation defaults |
 | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) | 0.3.8 | WB Stream, Telemost, DION, and VK Calls |
 
 SBP provides a management layer around these upstream projects; it does not create or own their protocols.
@@ -117,7 +117,7 @@ Routing integrations create one independent room for each new device. Historical
 | Profile type | Suggested client |
 |---|---|
 | Xray TCP or XHTTP | [v2rayN 7.20.4](https://github.com/2dust/v2rayN/releases/tag/7.20.4) for Windows; [v2rayNG](https://github.com/2dust/v2rayNG) for Android |
-| AmneziaWG | [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client) |
+| AmneziaWG | [AmneziaVPN 5.0.1.5](https://github.com/amnezia-vpn/amnezia-client/releases/tag/5.0.1.5) |
 | Routing integrations | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) |
 
 ## Operations
@@ -135,7 +135,8 @@ Routing integrations create one independent room for each new device. Historical
 |---|---|
 | Device changes | Edit changes the name; recreate a device to issue a new profile; runtime membership changes live without restarting shared containers |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
-| Component lifecycle | An active install or removal is restored after a browser reload and conflicting component or update actions remain disabled until it finishes |
+| Component lifecycle | An active install, update, or removal is restored after a browser reload and conflicting actions remain disabled until it finishes |
+| AmneziaWG component update | **Update** replaces the complete managed deployment with protocol 3.1, rotates the server identity and every device key together, and requires every user to import the newly issued profile |
 | Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |
 | Docker settings | Install, repair, or remove Docker Compose v2; verified external Ubuntu packages can be removed without adoption, while unknown CLI plugins remain untouched; includes a read-only container list |
 | REALITY settings | Each Xray component keeps its default profile SNI and can save a validated TLS target plus additional server-side SNI hostnames before installation or apply them to its installed managed container |
@@ -188,6 +189,8 @@ Versions use `X.Y.Z`:
 | `Z` | A compatible fix or small polish update |
 
 **Pre-release builds are strongly discouraged for normal use.** They remain in the release history only for developer testing, investigation, and convenient downloads, and may contain bugs or incomplete work.
+
+The `1.4.0` prerelease observes the new AmneziaWG 3.1 and AmneziaVPN 5.0.1.5 combination. Its default preset enables header protection, keeps narrow non-overlapping header ranges, leaves random trailers and cookie suppression disabled, and does not enable optional timing or content-padding experiments. Upstream client regressions are still being tracked in [issue #3043](https://github.com/amnezia-vpn/amnezia-client/issues/3043) and [issue #3048](https://github.com/amnezia-vpn/amnezia-client/issues/3048).
 
 ## Plans
 

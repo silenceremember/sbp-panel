@@ -126,6 +126,8 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("POST /api/update", admin(s.applyUpdate))
 	m.Handle("GET /api/update/progress", auth(s.updateProgress))
 	m.Handle("POST /api/components/{id}/install", admin(s.installComponent))
+	m.Handle("POST /api/components/amneziawg/update", admin(s.updateAmneziaWGComponent))
+	m.Handle("GET /api/components/amneziawg/update", admin(s.updateAmneziaWGComponent))
 	m.Handle("DELETE /api/components/{id}", admin(s.uninstallComponent))
 	m.Handle("DELETE /api/components/{id}/external", admin(s.removeExternalComponent))
 	m.Handle("GET /api/components/{id}/install", auth(s.installStatus))
@@ -1419,6 +1421,211 @@ func (s *server) installComponent(w http.ResponseWriter, r *http.Request) {
 func (s *server) installStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.proxyAgent(w, r, "GET", "/v1/components/"+r.PathValue("id")+"/install")
+}
+
+type amneziaWGComponentUpdateProfile struct {
+	DeviceID          int64  `json:"device_id"`
+	Credential        string `json:"credential"`
+	ProfileGeneration int    `json:"profile_generation"`
+	ProtocolVersion   string `json:"protocol_version"`
+}
+
+type componentUpdateJob struct {
+	ComponentID string `json:"component_id,omitempty"`
+	Operation   string `json:"operation,omitempty"`
+	Status      string `json:"status"`
+	Output      string `json:"output,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+type amneziaWGComponentUpdateAgentResponse struct {
+	OK     bool               `json:"ok"`
+	Job    componentUpdateJob `json:"job"`
+	Result struct {
+		Token   string `json:"token"`
+		Devices []struct {
+			DeviceID int64  `json:"device_id"`
+			Name     string `json:"name"`
+			Active   bool   `json:"active"`
+		} `json:"devices"`
+		Profiles []amneziaWGComponentUpdateProfile `json:"profiles"`
+	} `json:"result"`
+}
+
+func (s *server) callAgentJSON(method, path string, input, output any) error {
+	var body io.Reader
+	if input != nil {
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(encoded)
+	}
+	req, _ := http.NewRequest(method, "http://unix"+path, body)
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		return fmt.Errorf("agent unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	limited := io.LimitReader(resp.Body, 4<<20)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(limited).Decode(&failure)
+		if failure.Error == "" {
+			failure.Error = "agent rejected the component update"
+		}
+		return errors.New(failure.Error)
+	}
+	if output == nil {
+		_, err = io.Copy(io.Discard, limited)
+		return err
+	}
+	if err := json.NewDecoder(limited).Decode(output); err != nil {
+		return errors.New("agent returned invalid component update data")
+	}
+	return nil
+}
+
+func (s *server) rollbackAmneziaWGComponentUpdate(token string) error {
+	return s.callAgentJSON(http.MethodDelete, "/v1/components/amneziawg/update/"+url.PathEscape(token), nil, &map[string]any{})
+}
+
+func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+	if r.Method == http.MethodPost {
+		devices, err := s.db.ListAllDeviceMetadata()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		groups, err := s.db.ListGroups()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		activeGroups := make(map[int64]bool, len(groups))
+		for _, group := range groups {
+			activeGroups[group.ID] = groupAccessEnabled(group)
+		}
+		requested := make([]map[string]any, 0)
+		for _, device := range devices {
+			if device.Method != "amneziawg" {
+				continue
+			}
+			requested = append(requested, map[string]any{
+				"device_id": device.ID,
+				"name":      device.Name,
+				"active":    device.Enabled && activeGroups[device.GroupID],
+			})
+		}
+		var response amneziaWGComponentUpdateAgentResponse
+		if err := s.callAgentJSON(http.MethodPost, "/v1/components/amneziawg/update", map[string]any{"devices": requested}, &response); err != nil {
+			fail(w, http.StatusBadGateway, err)
+			return
+		}
+		jsonOut(w, http.StatusOK, response)
+		return
+	}
+
+	var response amneziaWGComponentUpdateAgentResponse
+	if err := s.callAgentJSON(http.MethodGet, "/v1/components/amneziawg/update", nil, &response); err != nil {
+		fail(w, http.StatusBadGateway, err)
+		return
+	}
+	if response.Job.Status != "done" || response.Result.Token == "" {
+		jsonOut(w, http.StatusOK, response)
+		return
+	}
+	if len(response.Result.Token) != 32 {
+		fail(w, http.StatusBadGateway, errors.New("agent returned an invalid AmneziaWG update token"))
+		return
+	}
+	current, err := s.db.ListAllDevices()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	oldProfiles := make([]store.DeviceProfileUpdate, 0)
+	currentByID := make(map[int64]store.Device)
+	groups, err := s.db.ListGroups()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	activeGroups := make(map[int64]bool, len(groups))
+	for _, group := range groups {
+		activeGroups[group.ID] = groupAccessEnabled(group)
+	}
+	for _, device := range current {
+		if device.Method != "amneziawg" {
+			continue
+		}
+		currentByID[device.ID] = device
+		oldProfiles = append(oldProfiles, store.DeviceProfileUpdate{DeviceID: device.ID, Name: device.Name, Credential: device.Credential, ProfileGeneration: device.ProfileGeneration, ProtocolVersion: device.ProtocolVersion})
+	}
+	if len(response.Result.Profiles) != len(currentByID) || len(response.Result.Devices) != len(currentByID) {
+		rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+		fail(w, http.StatusBadGateway, errors.Join(errors.New("AmneziaWG device set changed while the component update was running"), rollbackErr))
+		return
+	}
+	updates := make([]store.DeviceProfileUpdate, 0, len(response.Result.Profiles))
+	seen := make(map[int64]bool, len(response.Result.Profiles))
+	requested := make(map[int64]struct {
+		Name   string
+		Active bool
+	}, len(response.Result.Devices))
+	for _, device := range response.Result.Devices {
+		if _, duplicate := requested[device.DeviceID]; duplicate {
+			rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+			fail(w, http.StatusBadGateway, errors.Join(errors.New("agent returned a duplicate AmneziaWG device set"), rollbackErr))
+			return
+		}
+		requested[device.DeviceID] = struct {
+			Name   string
+			Active bool
+		}{Name: device.Name, Active: device.Active}
+	}
+	for _, profile := range response.Result.Profiles {
+		device, ok := currentByID[profile.DeviceID]
+		expected, requestedOK := requested[profile.DeviceID]
+		active := device.Enabled && activeGroups[device.GroupID]
+		if !ok || !requestedOK || expected.Name != device.Name || expected.Active != active || seen[profile.DeviceID] || strings.TrimSpace(profile.Credential) == "" || profile.ProfileGeneration != 2 || profile.ProtocolVersion != "3.1" {
+			rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+			fail(w, http.StatusBadGateway, errors.Join(errors.New("agent returned an incomplete AmneziaWG profile set"), rollbackErr))
+			return
+		}
+		seen[profile.DeviceID] = true
+		updates = append(updates, store.DeviceProfileUpdate{DeviceID: device.ID, Name: device.Name, Credential: profile.Credential, ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion})
+	}
+	if err := s.db.UpdateDeviceProfiles(updates); err != nil {
+		rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+		fail(w, http.StatusInternalServerError, errors.Join(fmt.Errorf("publish new AmneziaWG profiles: %w", err), rollbackErr))
+		return
+	}
+	commitPath := "/v1/components/amneziawg/update/" + url.PathEscape(response.Result.Token) + "/commit"
+	if err := s.callAgentJSON(http.MethodPost, commitPath, nil, &map[string]any{}); err != nil {
+		rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+		if rollbackErr == nil {
+			if restoreErr := s.db.UpdateDeviceProfiles(oldProfiles); restoreErr != nil {
+				fail(w, http.StatusInternalServerError, errors.Join(err, fmt.Errorf("restore previous AmneziaWG profiles: %w", restoreErr)))
+				return
+			}
+		}
+		fail(w, http.StatusBadGateway, errors.Join(fmt.Errorf("commit AmneziaWG component update: %w", err), rollbackErr))
+		return
+	}
+	response.Job.Output = fmt.Sprintf("AmneziaWG 3.1 installed and %d device profile(s) reissued", len(updates))
+	response.Result.Token = ""
+	response.Result.Devices = nil
+	response.Result.Profiles = nil
+	jsonOut(w, http.StatusOK, response)
 }
 func (s *server) uninstallComponent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

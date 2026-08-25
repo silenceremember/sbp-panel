@@ -546,6 +546,7 @@ type Component struct {
 	Version           string `json:"version,omitempty"`
 	CanInstall        bool   `json:"can_install"`
 	CanUninstall      bool   `json:"can_uninstall"`
+	CanUpdate         bool   `json:"can_update"`
 	Description       string `json:"description,omitempty"`
 	Note              string `json:"note,omitempty"`
 }
@@ -713,6 +714,13 @@ func componentStates(d Discovery, bbr bool) []Component {
 	awgManaged := names["amnezia-awg2"] && fileExists("/opt/vpn-panel-managed/amneziawg/awg/awg0.conf") && awgOwned
 	awgExternal := !awgManaged && hasLike("amnezia-awg")
 	awgNote := ""
+	awgProtocol := "3.1"
+	if awgManaged {
+		if body, err := os.ReadFile(amneziaWGServerPath); err == nil && !strings.Contains(string(body), "HeaderProtectionKey =") {
+			awgProtocol = "2.0"
+			awgNote = "A component update to AmneziaWG 3.1 is available and will rotate every server and device key."
+		}
+	}
 	if awgExternal {
 		awgNote = "An external AmneziaWG container was detected. SBP will not change or remove it."
 	}
@@ -734,7 +742,7 @@ func componentStates(d Discovery, bbr bool) []Component {
 		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal && !dockerComposePresent, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0 && !dockerComposePresent, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
-		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides an AmneziaWG 2.0 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
+		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, CanUpdate: awgManaged && awgProtocol != "3.1", Version: awgProtocol + " (engine " + awgVersion + ")", Description: "Provides an AmneziaWG 3.1 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
 		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated WB Stream connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: wbNote},
 		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated Yandex Telemost connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
 		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated DION connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: dionNote},
@@ -817,6 +825,9 @@ func (i *installer) lifecycle() installJob {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.active == "" {
+		if amneziaWGComponentUpdatePending() {
+			return installJob{ComponentID: "amneziawg", Operation: "update", Status: "running", Output: "AmneziaWG 3.1 is awaiting profile publication"}
+		}
 		return installJob{Status: "idle"}
 	}
 	return i.jobs[i.active]
@@ -1789,10 +1800,32 @@ const xrayRealityTarget = xrayRealityServerName + ":443"
 const awgVersion = "3.1.20260814"
 const awgBaseImage = "amneziavpn/amneziawg-go:" + awgVersion + "@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a"
 const awgPort = 48692
+const amneziaWGDockerfile = "FROM " + awgBaseImage + "\nRUN apk add --no-cache bash dumb-init iptables\nCOPY start.sh /opt/amnezia/start.sh\nRUN chmod 755 /opt/amnezia/start.sh\nENTRYPOINT [\"dumb-init\",\"/opt/amnezia/start.sh\"]\n"
+const amneziaWGStartScript = `#!/bin/bash
+set -e
+awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null || true
+awg-quick up /opt/amnezia/awg/awg0.conf
+iptables -A INPUT -i awg0 -j ACCEPT
+iptables -A FORWARD -i awg0 -j ACCEPT
+iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -t nat -A POSTROUTING -s 10.8.1.0/24 -o eth0 -j MASQUERADE
+tail -f /dev/null
+`
+
+func writeAmneziaWGBuildContext(dir string) error {
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(amneziaWGDockerfile), 0644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "start.sh"), []byte(amneziaWGStartScript), 0755)
+}
+
+func amneziaWGContainerArgsFor(image string) []string {
+	awgDir := "/opt/vpn-panel-managed/amneziawg/awg"
+	return []string{"run", "-d", "--name", "amnezia-awg2", "--restart", "unless-stopped", "--privileged", "--cap-add", "NET_ADMIN", "--cap-add", "SYS_MODULE", "--log-driver", "none", "-p", fmt.Sprintf("%d:%d/udp", awgPort, awgPort), "-v", "/lib/modules:/lib/modules:ro", "-v", awgDir + ":/opt/amnezia/awg", "--sysctl", "net.ipv4.conf.all.src_valid_mark=1", "--sysctl", "net.ipv4.ip_forward=1", image}
+}
 
 func amneziaWGContainerArgs() []string {
-	awgDir := "/opt/vpn-panel-managed/amneziawg/awg"
-	return []string{"run", "-d", "--name", "amnezia-awg2", "--restart", "unless-stopped", "--privileged", "--cap-add", "NET_ADMIN", "--cap-add", "SYS_MODULE", "--log-driver", "none", "-p", fmt.Sprintf("%d:%d/udp", awgPort, awgPort), "-v", "/lib/modules:/lib/modules:ro", "-v", awgDir + ":/opt/amnezia/awg", "--sysctl", "net.ipv4.conf.all.src_valid_mark=1", "--sysctl", "net.ipv4.ip_forward=1", "vpn-panel-amneziawg:locked"}
+	return amneziaWGContainerArgsFor("vpn-panel-amneziawg:locked")
 }
 
 func newXrayConfigFor(variant xrayVariant, private, shortID, xhttpPath string, fallbackLimit map[string]any) map[string]any {
@@ -2064,21 +2097,7 @@ func installAmneziaWG() (string, error) {
 		return "", err
 	}
 	markerWritten = true
-	dockerfile := "FROM " + awgBaseImage + "\nRUN apk add --no-cache bash dumb-init iptables\nCOPY start.sh /opt/amnezia/start.sh\nRUN chmod 755 /opt/amnezia/start.sh\nENTRYPOINT [\"dumb-init\",\"/opt/amnezia/start.sh\"]\n"
-	start := `#!/bin/bash
-set -e
-awg-quick down /opt/amnezia/awg/awg0.conf 2>/dev/null || true
-awg-quick up /opt/amnezia/awg/awg0.conf
-iptables -A INPUT -i awg0 -j ACCEPT
-iptables -A FORWARD -i awg0 -j ACCEPT
-iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -t nat -A POSTROUTING -s 10.8.1.0/24 -o eth0 -j MASQUERADE
-tail -f /dev/null
-`
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "start.sh"), []byte(start), 0755); err != nil {
+	if err := writeAmneziaWGBuildContext(dir); err != nil {
 		return "", err
 	}
 	if _, err := run("docker", "build", "--pull", "--force-rm", "-t", "vpn-panel-amneziawg:locked", dir); err != nil {
@@ -2112,7 +2131,8 @@ tail -f /dev/null
 	metadata, _ := json.MarshalIndent(map[string]string{
 		"server_public": strings.TrimSpace(serverPublic),
 		"endpoint":      fmt.Sprintf("%s:%d", publicServerAddress(), awgPort),
-		"shared":        serverSettingsText + "I1 = " + amneziaWG2DefaultI1 + "\n",
+		"shared":        amneziaWGClientSettings(serverSettings),
+		"protocol":      "3.1",
 	}, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "server.json"), metadata, 0600); err != nil {
 		return "", err
@@ -2137,7 +2157,7 @@ tail -f /dev/null
 		return "", err
 	}
 	installed = true
-	return "AmneziaWG 2 installed. Add the first device from the panel.", nil
+	return "AmneziaWG 3.1 installed. Add the first device from the panel.", nil
 }
 
 const wbReleaseURL = "https://github.com/kulikov0/whitelist-bypass/releases/download/v0.3.8/whitelist-bypass-cli-linux-x64.zip"
@@ -2761,6 +2781,9 @@ func amneziaWGClientParameters(dir string) (string, string, string, error) {
 func provisionAmneziaWG(name string) (string, error) {
 	amneziaWGCredentialMu.Lock()
 	defer amneziaWGCredentialMu.Unlock()
+	if err := ensureAmneziaWGComponentUpdateIdle(); err != nil {
+		return "", err
+	}
 
 	const dir = "/opt/vpn-panel-managed/amneziawg"
 	b, err := os.ReadFile(amneziaWGServerPath)
@@ -2806,7 +2829,7 @@ func provisionAmneziaWG(name string) (string, error) {
 	if err := updateAmneziaWGConfig(amneziaWGServerPath, amneziaWGContainerConfPath, append(b, []byte(peer)...), defaultAmneziaWGRuntimeAPI()); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("[Interface]\nAddress = 10.8.1.%d/32\nDNS = 1.1.1.1, 1.0.0.1\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", ipn, clientPrivate, shared, serverPublic, psk, endpoint), nil
+	return fmt.Sprintf("[Interface]\nAddress = 10.8.1.%d/32\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1376\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", ipn, clientPrivate, shared, serverPublic, psk, endpoint), nil
 }
 
 type renderedProfile struct {
@@ -2821,7 +2844,8 @@ func desiredProfile(method, credential string) (renderedProfile, error) {
 	case "xray", "xray-xhttp":
 		profile.ProtocolVersion = "26.3.27"
 	case "amneziawg":
-		profile.ProtocolVersion = "2.0"
+		profile.ProfileGeneration = 2
+		profile.ProtocolVersion = "3.1"
 	case "bypass-wb", "bypass-telemost", "bypass-dion", "bypass-vk":
 		profile.ProtocolVersion = "0.3.8"
 	default:
@@ -2971,6 +2995,9 @@ func configValue(body, section, key string) string {
 func controlAmneziaWGCredential(name, credential string, enabled bool) error {
 	amneziaWGCredentialMu.Lock()
 	defer amneziaWGCredentialMu.Unlock()
+	if err := ensureAmneziaWGComponentUpdateIdle(); err != nil {
+		return err
+	}
 
 	server, err := os.ReadFile(amneziaWGServerPath)
 	if err != nil {
@@ -3096,6 +3123,14 @@ func cleanupRuntimeArtifacts(c config.Config) error {
 		}
 	}
 	if _, err := exec.LookPath("docker"); err == nil {
+		if !amneziaWGComponentUpdatePending() {
+			if err := os.RemoveAll(amneziaWGUpdateBuildDir); err != nil {
+				problems = append(problems, fmt.Errorf("remove interrupted AmneziaWG update build directory: %w", err))
+			}
+			if err := removeImagesStrict(amneziaWGUpdateImage, amneziaWGUpdateRollbackImage); err != nil {
+				problems = append(problems, err)
+			}
+		}
 		for provider := range bypassSpecs {
 			if _, owned := componentOwnership("bypass-" + provider); !owned {
 				continue
@@ -3208,6 +3243,71 @@ func Run(configPath string) error {
 	})
 	mux.HandleFunc("GET /v1/components/{id}/install", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "job": inst.get(r.PathValue("id"))})
+	})
+	mux.HandleFunc("POST /v1/components/amneziawg/update", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Devices []amneziaWGComponentDevice `json:"devices"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
+		if err != nil || len(body) == 0 || len(body) > 1<<20 || json.Unmarshal(body, &input) != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid AmneziaWG component update request"))
+			return
+		}
+		if err := validateAmneziaWGComponentDevices(input.Devices); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := inst.startAmneziaWGUpdate(input.Devices); err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errLifecycleBusy) {
+				status = http.StatusConflict
+			}
+			writeError(w, status, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "job": inst.get("amneziawg")})
+	})
+	mux.HandleFunc("GET /v1/components/amneziawg/update", func(w http.ResponseWriter, r *http.Request) {
+		job := inst.get("amneziawg")
+		if amneziaWGComponentUpdatePending() && (job.Operation == "update" && job.Status == "done" || job.Status == "idle") {
+			result, err := currentAmneziaWGComponentUpdateResult()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			job = installJob{ComponentID: "amneziawg", Operation: "update", Status: "done", Output: "AmneziaWG 3.1 is ready for profile publication"}
+			writeJSON(w, map[string]any{"ok": true, "job": job, "result": result})
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "job": job})
+	})
+	mux.HandleFunc("POST /v1/components/amneziawg/update/{token}/commit", func(w http.ResponseWriter, r *http.Request) {
+		owner := "amneziawg-update-finalize:commit"
+		if err := acquireLifecycle(owner); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		defer releaseLifecycle(owner)
+		if err := commitAmneziaWGComponentUpdate(r.PathValue("token")); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		inst.finishAmneziaWGUpdate("done", "AmneziaWG 3.1 installed and every device profile reissued")
+		writeJSON(w, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("DELETE /v1/components/amneziawg/update/{token}", func(w http.ResponseWriter, r *http.Request) {
+		owner := "amneziawg-update-finalize:rollback"
+		if err := acquireLifecycle(owner); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		defer releaseLifecycle(owner)
+		if err := rollbackAmneziaWGComponentUpdate(r.PathValue("token")); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		inst.finishAmneziaWGUpdate("error", "AmneziaWG component update was rolled back")
+		writeJSON(w, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("DELETE /v1/components/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := inst.startUninstall(r.PathValue("id")); err != nil {

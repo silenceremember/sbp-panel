@@ -1020,7 +1020,31 @@ async function runComponentLifecycle(component, button, operation) {
   }
 }
 
+async function runComponentUpdate(component, button) {
+  try {
+    return await runPendingAction(
+      `component:${component.id}:update`,
+      button,
+      'Updating…',
+      async () => {
+        await api(`/api/components/${component.id}/update`, {method: 'POST'});
+        setLifecycleControls({component_id: component.id, operation: 'update', status: 'running'});
+        await watchJob(component.id, button, 'update', {
+          statusPath: `/api/components/${component.id}/update`,
+          throwOnError: true
+        });
+      }
+    );
+  } catch (error) {
+    setLifecycleControls(null);
+    if (button.isConnected) { button.disabled = false; button.textContent = 'Retry'; }
+    notifyError(error);
+    return false;
+  }
+}
+
 function lifecyclePendingLabel(operation) {
+  if (operation === 'update') return 'Updating…';
   if (operation === 'install') return 'Installing…';
   if (operation === 'compose-install') return 'Installing Compose…';
   if (operation === 'compose-uninstall') return 'Removing Compose…';
@@ -1058,6 +1082,7 @@ function resumeLifecycle(job) {
   if (!running) return;
   const button = document.querySelector('[data-lifecycle-active]');
   watchJob(job.component_id, button, job.operation || 'operation', {
+    statusPath: job.operation === 'update' ? `/api/components/${encodeURIComponent(job.component_id)}/update` : undefined,
     throwOnError: true,
     onDone: async completed => {
       if (generation !== lifecycleWatchGeneration) return;
@@ -1387,7 +1412,10 @@ async function loadDiscovery(prefetched = null) {
           : component.installed
             ? buttonHTML('Remove', 'danger', 'data-uninstall')
             : buttonHTML(component.can_install ? 'Install' : 'Unavailable', 'primary', `data-install ${component.can_install ? '' : 'disabled'}`.trim());
-      const action = settingsAction + lifecycleAction;
+      const updateAction = !componentIsActive && component.can_update
+        ? buttonHTML('Update', 'primary', 'data-component-update')
+        : '';
+      const action = settingsAction + updateAction + lifecycleAction;
       const blocker = component.note || (component.installed && !component.can_uninstall ? 'The component was detected but is not managed by the panel.' : '');
       row.innerHTML = `<td><b>${escapeHTML(component.name)}</b></td><td>${version}</td><td>${stateLabel}</td><td><div class="install-note"><span>${escapeHTML(component.description || 'Managed panel component.')}</span>${blocker ? `<strong>${escapeHTML(blocker)}</strong>` : ''}</div></td><td><div class="component-actions">${action}</div></td>`;
       const button = row.querySelector('[data-install]');
@@ -1396,6 +1424,11 @@ async function loadDiscovery(prefetched = null) {
         await runComponentLifecycle(component, button, 'install');
       };
       row.querySelector('[data-remove-external]')?.addEventListener('click', event => externalRemovalPrompt(component, event.currentTarget));
+      row.querySelector('[data-component-update]')?.addEventListener('click', async event => {
+        if (component.id !== 'amneziawg') return;
+        if (!confirm('Update AmneziaWG to protocol 3.1? The server identity and every device key will be replaced. All users must import their newly issued profiles.')) return;
+        await runComponentUpdate(component, event.currentTarget);
+      });
       row.querySelector('[data-component-settings]')?.addEventListener('click', () => {
         if (isBypass) bypassSettingsDialog(component);
         else if (component.id === 'xray' || component.id === 'xray-xhttp') xrayRealitySNIDialog(component);

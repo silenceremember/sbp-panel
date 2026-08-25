@@ -151,6 +151,96 @@ func TestInstallStatusIsNotCacheable(t *testing.T) {
 	}
 }
 
+func TestAmneziaWGComponentUpdatePublishesEveryProfileThenCommits(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID, err := db.CreateDevice(groupID, "Phone", "amneziawg", "old-profile", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetDeviceCredential(deviceID, "old-profile", 1, "2.0"); err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Repeat("a", 32)
+	var calls []string
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.Method+" "+request.URL.RequestURI())
+		body := `{"ok":true}`
+		if request.Method == http.MethodGet {
+			body = fmt.Sprintf(`{"ok":true,"job":{"component_id":"amneziawg","operation":"update","status":"done"},"result":{"token":%q,"devices":[{"device_id":%d,"name":"Phone","active":true}],"profiles":[{"device_id":%d,"credential":"new-profile","profile_generation":2,"protocol_version":"3.1"}]}}`, token, deviceID, deviceID)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	s.updateAmneziaWGComponent(response, httptest.NewRequest(http.MethodGet, "/api/components/amneziawg/update", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("component update response is cacheable")
+	}
+	device, err := db.Device(deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.Credential != "new-profile" || device.ProfileGeneration != 2 || device.ProtocolVersion != "3.1" {
+		t.Fatalf("profile was not published: %#v", device)
+	}
+	wantCommit := "POST /v1/components/amneziawg/update/" + token + "/commit"
+	if len(calls) != 2 || calls[1] != wantCommit {
+		t.Fatalf("agent calls=%#v", calls)
+	}
+}
+
+func TestAmneziaWGComponentUpdateRestoresProfilesWhenCommitFails(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	deviceID, _ := db.CreateDevice(groupID, "Phone", "amneziawg", "old-profile", "app")
+	_ = db.SetDeviceCredential(deviceID, "old-profile", 1, "2.0")
+	token := strings.Repeat("b", 32)
+	var calls []string
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.Method+" "+request.URL.RequestURI())
+		status, body := http.StatusOK, `{"ok":true}`
+		switch request.Method {
+		case http.MethodGet:
+			body = fmt.Sprintf(`{"ok":true,"job":{"operation":"update","status":"done"},"result":{"token":%q,"devices":[{"device_id":%d,"name":"Phone","active":true}],"profiles":[{"device_id":%d,"credential":"new-profile","profile_generation":2,"protocol_version":"3.1"}]}}`, token, deviceID, deviceID)
+		case http.MethodPost:
+			status, body = http.StatusInternalServerError, `{"ok":false,"error":"commit failed"}`
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	s.updateAmneziaWGComponent(response, httptest.NewRequest(http.MethodGet, "/api/components/amneziawg/update", nil))
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	device, err := db.Device(deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.Credential != "old-profile" || device.ProfileGeneration != 1 || device.ProtocolVersion != "2.0" {
+		t.Fatalf("previous profile was not restored: %#v", device)
+	}
+	wantRollback := "DELETE /v1/components/amneziawg/update/" + token
+	if len(calls) != 3 || calls[2] != wantRollback {
+		t.Fatalf("agent calls=%#v", calls)
+	}
+}
+
 func TestDockerComposeForwardingUsesExactAgentEndpoint(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
@@ -273,7 +363,7 @@ func TestDashboardClientLinksArePinnedAndProviderCredentialsMovedToSettings(t *t
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		"AmneziaVPN_4.8.21.0_windows_x64.exe",
+		"AmneziaVPN_5.0.1.5_windows_x64.exe",
 		"releases/download/7.20.4/v2rayN-windows-64-desktop.zip",
 		"v2rayNG_2.2.6_arm64-v8a.apk",
 		"WhitelistBypass.Joiner-0.3.8-x64.exe",
@@ -321,6 +411,8 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"blockBackgroundScroll",
 		"event.target.closest?.('#dialog, #notifications')",
 		"const settingsAction = buttonHTML('Settings'",
+		"data-component-update",
+		"/api/components/${component.id}/update",
 		"/api/components/${component.id}/settings",
 	} {
 		if !strings.Contains(javascript, expected) {
