@@ -109,7 +109,7 @@ It must be usable by a contributor who has only the repository and the plan.
   managed directories, public ports, runtime APIs, and traffic namespaces.
   Installing, updating, or removing one variant must not mutate another.
 - Routing integrations use one independently managed room per device. Room
-  traffic is aggregated by group and provider for the dashboard.
+  traffic is attributed to that device and rolled up into its group total.
 - Deleting a group must clean its devices, credentials, traffic rows, and saved
   routing rooms, while reporting any external cleanup that could not be proven.
 - Traffic data covers only the current UTC month. Xray and AmneziaWG can be

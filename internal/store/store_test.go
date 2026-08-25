@@ -567,13 +567,15 @@ func TestDeviceTrafficSamplesRollUpToGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	month := time.Now().UTC().Format("2006-01")
-	if err := s.SetGroupProtocolTraffic(groupID, "bypass-wb", month, 10, 20); err != nil {
+	bypassID, err := s.CreateDevice(groupID, "Calls", "bypass-vk", "vk-calls://room")
+	if err != nil {
 		t.Fatal(err)
 	}
+	month := time.Now().UTC().Format("2006-01")
 	if err := s.SetDeviceTrafficSamples(month, []DeviceTrafficSample{
 		{DeviceID: xrayID, GroupID: groupID, Protocol: "xray", RXBytes: 100, TXBytes: 50},
 		{DeviceID: awgID, GroupID: groupID, Protocol: "amneziawg", RXBytes: 300, TXBytes: 200},
+		{DeviceID: bypassID, GroupID: groupID, Protocol: "bypass-vk", RXBytes: 10, TXBytes: 20},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +587,7 @@ func TestDeviceTrafficSamplesRollUpToGroup(t *testing.T) {
 	for _, device := range devices {
 		traffic[device.ID] = device.RXBytes + device.TXBytes
 	}
-	if traffic[xrayID] != 150 || traffic[awgID] != 500 {
+	if traffic[xrayID] != 150 || traffic[awgID] != 500 || traffic[bypassID] != 30 {
 		t.Fatalf("device traffic = %#v", traffic)
 	}
 	groups, err := s.ListGroups()

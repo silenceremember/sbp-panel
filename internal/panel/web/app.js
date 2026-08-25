@@ -756,7 +756,7 @@ function renderGroups(prefetchedDevices = null) {
         <div class="group-summary">
           <div class="group-title"><h3 data-group-name></h3><span class="group-contact" data-group-contact></span></div>
           <div><span class="group-stat-label">Expires</span><span data-group-expiry></span></div>
-          <div><span class="group-stat-label">Monthly traffic</span><span class="traffic" data-group-traffic></span><small class="muted" data-group-traffic-details></small></div>
+          <div><span class="group-stat-label">Monthly traffic</span><span class="traffic" data-group-traffic></span></div>
           <div class="group-actions">${buttonHTML('+1 month', 'primary', 'data-extend')}${buttonHTML('+Device', 'secondary', 'data-device')}${buttonHTML('Copy check link', 'secondary', 'data-check-link')}${buttonHTML('Edit', 'secondary', 'data-edit')}${buttonHTML('Remove', 'danger', 'data-delete')}</div>
         </div>
         <div class="devices-wrap"><table class="devices-table"><thead><tr><th>Device</th><th>Method</th><th>Monthly traffic</th><th>Status</th><th>Actions</th></tr></thead><tbody class="devices"><tr data-empty><td colspan="5" class="empty-row">Loading devices…</td></tr></tbody></table></div>`;
@@ -775,8 +775,6 @@ function renderGroups(prefetchedDevices = null) {
     const traffic = card.querySelector('[data-group-traffic]');
     traffic.dataset.groupTraffic = String(groupID);
     traffic.textContent = fmtBytes((group.rx_bytes || 0) + (group.tx_bytes || 0));
-    const trafficDetails = card.querySelector('[data-group-traffic-details]');
-    trafficDetails.dataset.groupTrafficDetails = String(groupID);
     card.querySelector('[data-extend]').hidden = Boolean(group.unlimited);
     card.querySelector('[data-edit]').onclick = () => groupDialog(group);
     card.querySelector('[data-extend]').onclick = async event => {
@@ -931,6 +929,7 @@ function renderDevices(root, devices = []) {
       row.innerHTML = `<td><b data-device-name></b></td><td><span class="method" data-device-method></span></td><td data-device-traffic></td><td data-device-status></td><td><div class="device-actions">${buttonHTML('Copy', 'secondary', 'data-key')}${buttonHTML('Edit', 'secondary', 'data-edit')}${buttonHTML('Remove', 'danger', 'data-delete')}</div></td>`;
     }
     const revocable = device.method === 'xray' || device.method === 'xray-xhttp' || device.method === 'amneziawg';
+    const tracked = revocable || String(device.method || '').startsWith('bypass-');
     const toggleJob = deviceToggleJobs.get(deviceID);
     if (toggleJob) {
       toggleJob.device = device;
@@ -941,7 +940,7 @@ function renderDevices(root, devices = []) {
     row.querySelector('[data-device-method]').textContent = deviceMethodLabel(device);
     const trafficCell = row.querySelector('[data-device-traffic]');
     trafficCell.dataset.deviceTraffic = String(deviceID);
-    trafficCell.textContent = revocable ? fmtBytes((device.rx_bytes || 0) + (device.tx_bytes || 0)) : '-';
+    trafficCell.textContent = tracked ? fmtBytes((device.rx_bytes || 0) + (device.tx_bytes || 0)) : '-';
     const status = row.querySelector('[data-device-status]');
     let checkbox = status.querySelector('input');
     if (revocable) {
@@ -1496,46 +1495,18 @@ function applyGroupMetrics(metrics) {
     if (target && liveDevices.has(Number(device.id))) target.textContent = fmtBytes(liveDevices.get(Number(device.id)));
   }
   const deviceTraffic = new Map();
-  const groupsWithBypass = new Set();
   for (const device of devices) {
     const groupID = Number(device.group_id);
-    if (String(device.method || '').startsWith('bypass-')) {
-      groupsWithBypass.add(groupID);
-      continue;
-    }
-    if (device.method !== 'xray' && device.method !== 'xray-xhttp' && device.method !== 'amneziawg') continue;
+    if (device.method !== 'xray' && device.method !== 'xray-xhttp' && device.method !== 'amneziawg' && !String(device.method || '').startsWith('bypass-')) continue;
     const total = liveDevices.has(Number(device.id))
       ? liveDevices.get(Number(device.id))
       : Number(device.rx_bytes || 0) + Number(device.tx_bytes || 0);
     deviceTraffic.set(groupID, (deviceTraffic.get(groupID) || 0) + total);
   }
-  const baseTraffic = new Map((state?.groups || []).map(group => {
-    const groupID = Number(group.id);
-    const persisted = Number(group.rx_bytes || 0) + Number(group.tx_bytes || 0);
-    return [groupID, groupsWithBypass.has(groupID) ? persisted : (deviceTraffic.get(groupID) || 0)];
-  }));
+  const baseTraffic = new Map((state?.groups || []).map(group => [Number(group.id), deviceTraffic.get(Number(group.id)) || 0]));
   document.querySelectorAll('[data-group-traffic]').forEach(target => {
     target.textContent = fmtBytes(baseTraffic.get(Number(target.dataset.groupTraffic)) || 0);
   });
-  document.querySelectorAll('[data-group-traffic-details]').forEach(target => {
-    target.textContent = '';
-  });
-  const roomTraffic = new Map();
-  const roomDetails = new Map();
-  for (const room of (metrics?.bypass_rooms || [])) {
-    const groupID = Number(room.group_id);
-    const total = Number(room.rx_bytes || 0) + Number(room.tx_bytes || 0);
-    roomTraffic.set(groupID, (roomTraffic.get(groupID) || 0) + total);
-    const details = roomDetails.get(groupID) || [];
-    details.push(`${String(room.provider || '').replace('bypass-', '').toUpperCase()}: ${fmtBytes(total)}`);
-    roomDetails.set(groupID, details);
-  }
-  for (const [groupID, total] of roomTraffic) {
-    const target = document.querySelector(`[data-group-traffic="${groupID}"]`);
-    if (target) target.textContent = fmtBytes((deviceTraffic.get(groupID) || 0) + total);
-    const details = document.querySelector(`[data-group-traffic-details="${groupID}"]`);
-    if (details) details.textContent = roomDetails.get(groupID).join(' · ');
-  }
 }
 
 function startMetricsPolling() {

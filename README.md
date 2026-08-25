@@ -144,7 +144,7 @@ Routing integrations create one independent room for each new device. Historical
 | AmneziaWG settings | Server-side AWG obfuscation parameters are available before and after installation; profile-affecting changes are refused while peers exist |
 | Routing settings | Each routing component keeps its own cookie JSON upload, clear action, and saved rooms under **Components > Settings** |
 | Expiration | Expired groups are reconciled with runtime credentials and routing access |
-| Routing | One room and bounded managed container per device; traffic remains aggregated by group and provider |
+| Routing | One room and bounded managed container per device, with per-device traffic estimates rolled up into the group total |
 | Traffic | Current UTC month only; operational estimates, not billing records |
 | Persistent state | No historical traffic archive, automatic backups, editable source tree, or build toolchain |
 | Logs | Persistent managed Docker logging is disabled; SBP services do not write persistent application logs |

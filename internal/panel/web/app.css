@@ -848,12 +848,6 @@ header {
   font-weight: var(--font-strong);
 }
 
-.group-summary [data-group-traffic-details] {
-  display: block;
-  margin-top: 3px;
-  font-size: 11px;
-}
-
 .group-actions {
   justify-content: flex-end;
   flex-wrap: wrap;
