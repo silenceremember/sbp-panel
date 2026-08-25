@@ -116,9 +116,9 @@ Routing integrations create one independent room for each new device. Historical
 
 | Profile type | Suggested client |
 |---|---|
-| Xray TCP or XHTTP | [v2rayN 7.20.4](https://github.com/2dust/v2rayN/releases/tag/7.20.4) for Windows; [v2rayNG](https://github.com/2dust/v2rayNG) for Android |
-| AmneziaWG | [AmneziaVPN 5.0.1.5](https://github.com/amnezia-vpn/amnezia-client/releases/tag/5.0.1.5) |
-| Routing integrations | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) |
+| Xray TCP or XHTTP | [v2rayN 7.20.4](https://github.com/2dust/v2rayN/releases/tag/7.20.4) for Windows; [v2rayNG 2.2.6](https://github.com/2dust/v2rayNG/releases/tag/2.2.6) for Android |
+| AmneziaWG | [AmneziaVPN 5.0.1.5](https://github.com/amnezia-vpn/amnezia-client/releases/tag/5.0.1.5) for Windows or Android |
+| Routing integrations | [Whitelist Bypass 0.3.8](https://github.com/kulikov0/whitelist-bypass/releases/tag/v0.3.8) for Windows or Android |
 
 ## Operations
 
@@ -134,6 +134,7 @@ Routing integrations create one independent room for each new device. Historical
 | Area | Behavior |
 |---|---|
 | Device changes | Edit changes the name; recreate a device to issue a new profile; runtime membership changes live without restarting shared containers |
+| Component version labels | **Update** appears when device version labels differ from the installed managed component; one action assigns the current version to every device using that method without changing profiles, keys, rooms, or containers |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
 | Component lifecycle | An active install, update, or removal is restored after a browser reload and conflicting actions remain disabled until it finishes |
 | AmneziaWG component update | **Update** replaces the complete managed deployment with protocol 3.1, rotates the server identity and every device key together, and requires every user to import the newly issued profile |
@@ -190,7 +191,7 @@ Versions use `X.Y.Z`:
 
 **Pre-release builds are strongly discouraged for normal use.** They remain in the release history only for developer testing, investigation, and convenient downloads, and may contain bugs or incomplete work.
 
-The `1.4.0` prerelease observes the new AmneziaWG 3.1 and AmneziaVPN 5.0.1.5 combination. Its default preset enables header protection, keeps narrow non-overlapping header ranges, leaves random trailers and cookie suppression disabled, and does not enable optional timing or content-padding experiments. Upstream client regressions are still being tracked in [issue #3043](https://github.com/amnezia-vpn/amnezia-client/issues/3043) and [issue #3048](https://github.com/amnezia-vpn/amnezia-client/issues/3048).
+The `1.4.1` prerelease observes the new AmneziaWG 3.1 and AmneziaVPN 5.0.1.5 combination. Its default preset enables header protection, keeps narrow non-overlapping header ranges, leaves random trailers and cookie suppression disabled, and does not enable optional timing or content-padding experiments. Upstream client regressions are still being tracked in [issue #3043](https://github.com/amnezia-vpn/amnezia-client/issues/3043) and [issue #3048](https://github.com/amnezia-vpn/amnezia-client/issues/3048).
 
 ## Plans
 

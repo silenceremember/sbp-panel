@@ -88,7 +88,7 @@ function deviceMethodLabel(device) {
   let label = DEVICE_METHOD_NAMES[device.method] || device.method;
   if (device.method === 'amneziawg') label = device.format === 'app' ? 'AmneziaWG · AmneziaVPN' : 'AmneziaWG · external client';
   const version = String(device.protocol_version || '').trim();
-  return version ? `${label} · ${version}` : `${label} · refresh available`;
+  return version ? `${label} · ${version}` : `${label} · update available`;
 }
 
 function stopMetricsPolling() {
@@ -1043,6 +1043,30 @@ async function runComponentUpdate(component, button) {
   }
 }
 
+async function runComponentProfileVersionUpdate(component, button) {
+  try {
+    return await runPendingAction(
+      `component:${component.id}:profile-version`,
+      button,
+      'Updating…',
+      async () => {
+        setLifecycleControls({component_id: component.id, operation: 'update', status: 'running'});
+        try {
+          const updated = await api(`/api/components/${component.id}/profile-version`, {method: 'POST'});
+          await Promise.all([refreshGroups(), loadDiscovery()]);
+          notify(updated.output || `Profile version ${updated.protocol_version} recorded.`, 'success');
+        } finally {
+          setLifecycleControls(null);
+        }
+      }
+    );
+  } catch (error) {
+    setLifecycleControls(null);
+    notifyError(error);
+    return false;
+  }
+}
+
 function lifecyclePendingLabel(operation) {
   if (operation === 'update') return 'Updating…';
   if (operation === 'install') return 'Installing…';
@@ -1425,9 +1449,13 @@ async function loadDiscovery(prefetched = null) {
       };
       row.querySelector('[data-remove-external]')?.addEventListener('click', event => externalRemovalPrompt(component, event.currentTarget));
       row.querySelector('[data-component-update]')?.addEventListener('click', async event => {
-        if (component.id !== 'amneziawg') return;
-        if (!confirm('Update AmneziaWG to protocol 3.1? The server identity and every device key will be replaced. All users must import their newly issued profiles.')) return;
-        await runComponentUpdate(component, event.currentTarget);
+        if (component.update_kind === 'upgrade') {
+          if (component.id !== 'amneziawg') return;
+          if (!confirm('Update AmneziaWG to protocol 3.1? The server identity and every device key will be replaced. All users must import their newly issued profiles.')) return;
+          await runComponentUpdate(component, event.currentTarget);
+          return;
+        }
+        await runComponentProfileVersionUpdate(component, event.currentTarget);
       });
       row.querySelector('[data-component-settings]')?.addEventListener('click', () => {
         if (isBypass) bypassSettingsDialog(component);

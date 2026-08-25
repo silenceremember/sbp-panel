@@ -364,9 +364,11 @@ func TestDashboardClientLinksArePinnedAndProviderCredentialsMovedToSettings(t *t
 	body := response.Body.String()
 	for _, expected := range []string{
 		"AmneziaVPN_5.0.1.5_windows_x64.exe",
+		"AmneziaVPN_5.0.1.5_android11%2B_arm64-v8a.apk",
 		"releases/download/7.20.4/v2rayN-windows-64-desktop.zip",
 		"v2rayNG_2.2.6_arm64-v8a.apk",
 		"WhitelistBypass.Joiner-0.3.8-x64.exe",
+		"releases/download/v0.3.8/whitelist-bypass.apk",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard is missing pinned client download %q", expected)
@@ -413,6 +415,8 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"const settingsAction = buttonHTML('Settings'",
 		"data-component-update",
 		"/api/components/${component.id}/update",
+		"runComponentProfileVersionUpdate(component, event.currentTarget)",
+		"/api/components/${component.id}/profile-version",
 		"/api/components/${component.id}/settings",
 	} {
 		if !strings.Contains(javascript, expected) {
@@ -442,7 +446,7 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		t.Fatal("REALITY target port does not use the spinner-free numeric text control")
 	}
 	stylesheet := readAsset("/app.css")
-	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "body.dialog-open::before", "z-index: 910"} {
+	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "flex: 0 0 94px", "body.dialog-open::before", "z-index: 910"} {
 		if !strings.Contains(stylesheet, expected) {
 			t.Fatalf("dashboard stylesheet is missing %q", expected)
 		}
@@ -453,6 +457,152 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 	markup := readAsset("/")
 	if !strings.Contains(markup, `value="cancel" class="button-secondary" formnovalidate`) {
 		t.Fatal("shared dialog Cancel button can still trigger required-field validation")
+	}
+}
+
+func TestDiscoveryOffersGlobalVersionUpdateForMismatchedProfiles(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateDevice(groupID, "PC", "xray", "vless://old@example"); err != nil {
+		t.Fatal(err)
+	}
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"ok":true,"components":[{"id":"xray","installed":true,"external":false,"can_update":false,"profile_version":"26.3.27"}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	s.discovery(response, httptest.NewRequest(http.MethodGet, "/api/discovery", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	var result struct {
+		Components []struct {
+			CanUpdate        bool   `json:"can_update"`
+			UpdateKind       string `json:"update_kind"`
+			ProfilesToUpdate int    `json:"profiles_to_update"`
+		} `json:"components"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "metadata" || result.Components[0].ProfilesToUpdate != 1 {
+		t.Fatalf("unexpected component update state: %#v", result.Components)
+	}
+}
+
+func TestDiscoveryKeepsAmneziaWGUpgradeAheadOfMetadataUpdate(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateDevice(groupID, "Phone", "amneziawg", "vpn://old"); err != nil {
+		t.Fatal(err)
+	}
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"ok":true,"components":[{"id":"amneziawg","installed":true,"external":false,"can_update":true,"profile_version":"2.0"}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	s.discovery(response, httptest.NewRequest(http.MethodGet, "/api/discovery", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	var result struct {
+		Components []struct {
+			CanUpdate  bool   `json:"can_update"`
+			UpdateKind string `json:"update_kind"`
+		} `json:"components"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "upgrade" {
+		t.Fatalf("unexpected AmneziaWG update state: %#v", result.Components)
+	}
+}
+
+func TestComponentProfileVersionUpdateRequiresAdminCSRFAndPreservesProfiles(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.Authenticate("admin", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrfToken, err := db.CreateSession(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID, err := db.CreateDevice(groupID, "PC", "xray", "vless://unchanged@example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		body := `{"components":[{"id":"xray","installed":true,"external":false,"profile_version":"26.3.27"}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	path := "/api/components/xray/profile-version"
+
+	request := httptest.NewRequest(http.MethodPost, path, nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || calls != 0 {
+		t.Fatalf("unauthenticated update status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("CSRF-free update status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("authenticated update status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("profile version update response is cacheable")
+	}
+	device, err := db.Device(deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.ProtocolVersion != "26.3.27" || device.Credential != "vless://unchanged@example" || device.ProfileGeneration != 0 {
+		t.Fatalf("profile material changed unexpectedly: %#v", device)
 	}
 }
 

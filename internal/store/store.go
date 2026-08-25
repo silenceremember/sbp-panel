@@ -674,6 +674,32 @@ func (s *Store) CountDevicesByMethod(method string) (int, error) {
 	return count, err
 }
 
+func (s *Store) CountProfilesNotAtVersion(method, version string) (int, error) {
+	method = strings.TrimSpace(method)
+	version = strings.TrimSpace(version)
+	if method == "" || version == "" {
+		return 0, errors.New("profile method and version are required")
+	}
+	var count int
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM credentials WHERE protocol=? AND protocol_version<>?`, method, version).Scan(&count)
+	return count, err
+}
+
+// SetProfilesVersion records trusted component metadata without rewriting any
+// credential material. One UPDATE keeps the complete component scope atomic.
+func (s *Store) SetProfilesVersion(method, version string) (int64, error) {
+	method = strings.TrimSpace(method)
+	version = strings.TrimSpace(version)
+	if method == "" || version == "" {
+		return 0, errors.New("profile method and version are required")
+	}
+	result, err := s.DB.Exec(`UPDATE credentials SET protocol_version=? WHERE protocol=? AND protocol_version<>?`, version, method, version)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *Store) CountProfilesBeforeGeneration(groupID int64, method string, generation int) (int, error) {
 	var count int
 	err := s.DB.QueryRow(`SELECT COUNT(*) FROM devices d LEFT JOIN credentials c ON c.device_id=d.id AND c.protocol=d.method WHERE d.group_id=? AND d.method=? AND COALESCE(c.profile_generation,0)<?`, groupID, method, generation).Scan(&count)

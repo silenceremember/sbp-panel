@@ -97,6 +97,46 @@ func TestUpdateDeviceProfilesIsAtomic(t *testing.T) {
 	}
 }
 
+func TestSetProfilesVersionUpdatesOnlyTheSelectedMethod(t *testing.T) {
+	s := testStore(t)
+	groupID, err := s.CreateGroup("Family", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xrayID, err := s.CreateDevice(groupID, "PC", "xray", "vless://xray@example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bypassID, err := s.CreateDevice(groupID, "Phone", "bypass-wb", "wbstream://room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := s.CountProfilesNotAtVersion("xray", "26.3.27"); err != nil || count != 1 {
+		t.Fatalf("initial mismatch count=%d err=%v", count, err)
+	}
+	updated, err := s.SetProfilesVersion("xray", "26.3.27")
+	if err != nil || updated != 1 {
+		t.Fatalf("updated=%d err=%v", updated, err)
+	}
+	xray, err := s.Device(xrayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bypass, err := s.Device(bypassID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if xray.ProtocolVersion != "26.3.27" || xray.Credential != "vless://xray@example" || xray.ProfileGeneration != 0 {
+		t.Fatalf("Xray profile material changed unexpectedly: %#v", xray)
+	}
+	if bypass.ProtocolVersion != "" || bypass.Credential != "wbstream://room" {
+		t.Fatalf("unrelated profile changed: %#v", bypass)
+	}
+	if updated, err := s.SetProfilesVersion("xray", "26.3.27"); err != nil || updated != 0 {
+		t.Fatalf("idempotent update=%d err=%v", updated, err)
+	}
+}
+
 func TestPasswordRoundTrip(t *testing.T) {
 	h, err := HashPassword("12345678")
 	if err != nil {

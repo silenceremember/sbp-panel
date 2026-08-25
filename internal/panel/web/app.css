@@ -702,6 +702,7 @@ header {
 
 .component-actions button {
   width: 94px;
+  flex: 0 0 94px;
 }
 
 .install-note {
