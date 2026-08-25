@@ -62,8 +62,9 @@ Progress and decisions:
 
 - [x] Confirmed the worktree is clean and `v1.4.0` is unused.
 - [x] Kept `v1.3.0` stable; this feature uses a new numeric prerelease.
-- [x] Prepared `v1.3.1` with only the device Update and migration cleanup;
-  AWG remains at protocol 2.0 with AmneziaVPN 4.8.21.0.
+- [x] Published stable `v1.3.1` with only the device Update and migration
+  cleanup; AWG remains at protocol 2.0 with AmneziaVPN 4.8.21.0. Release CI and
+  the release allowlist, digest, size, and updater metadata were verified.
 - [ ] Verify exact AWG 3.1 config keys, defaults, and client serialization from
   the AmneziaVPN 5.0.1.5 and amneziawg-go sources.
 - [x] Chose conservative AWG 3.1 defaults instead of copying every experimental
