@@ -864,7 +864,7 @@ header {
 
 .devices-table {
   width: 100%;
-  min-width: 820px;
+  min-width: 880px;
   table-layout: fixed;
   border-collapse: collapse;
 }
@@ -886,7 +886,7 @@ header {
 }
 
 .devices-table th:nth-child(5) {
-  width: 210px;
+  width: 270px;
 }
 
 .devices-table th {

@@ -3,7 +3,10 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/silenceremember/sbp-panel/internal/config"
 )
 
 func TestSavedBypassRoomsPreservesConfiguredRooms(t *testing.T) {
@@ -33,6 +36,30 @@ func TestSavedBypassRoomsPreservesConfiguredRooms(t *testing.T) {
 	}
 	if len(got) != 2 || got[7] != "wbstream://room-seven" || got[12] != "wbstream://room-twelve" {
 		t.Fatalf("unexpected saved rooms: %#v", got)
+	}
+}
+
+func TestSavedBypassRoomsIncludesIndependentDeviceRooms(t *testing.T) {
+	groupsDir := filepath.Join(t.TempDir(), "groups")
+	for device, room := range map[string]string{"11": "wbstream://device-eleven", "12": "wbstream://device-twelve"} {
+		dir := filepath.Join(groupsDir, "7", "devices", device)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "call.txt"), []byte(room+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rooms, err := savedBypassRooms(groupsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]string{}
+	for _, room := range rooms {
+		got[room.deviceID] = room.room
+	}
+	if len(got) != 2 || got[11] != "wbstream://device-eleven" || got[12] != "wbstream://device-twelve" {
+		t.Fatalf("unexpected device rooms: %#v", rooms)
 	}
 }
 
@@ -80,5 +107,30 @@ func TestListSavedBypassRoomsReturnsCodesForEveryProvider(t *testing.T) {
 		if got[provider] != code {
 			t.Fatalf("%s code = %q, want %q; rooms: %#v", provider, got[provider], code, rooms)
 		}
+	}
+}
+
+func TestBypassDeviceResourceNamesAreStableAndSeparated(t *testing.T) {
+	spec := bypassSpecs["wb"]
+	if got := bypassDeviceContainer(spec, 7, 11); got != "vpn-panel-bypass-wb-g7-d11" {
+		t.Fatalf("unexpected container name: %q", got)
+	}
+	first, err := bypassDeviceDir("wb", 7, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := bypassDeviceDir("wb", 7, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || filepath.Base(first) != "11" || filepath.Base(second) != "12" {
+		t.Fatalf("device paths are not separated: %q %q", first, second)
+	}
+}
+
+func TestProfileRefreshNeverDowngradesNewerGeneration(t *testing.T) {
+	_, err := refreshCredential("bypass-wb", "Phone", "wbstream://newer", 2, 7, 11, config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "newer SBP release") {
+		t.Fatalf("newer profile was not protected from downgrade: %v", err)
 	}
 }

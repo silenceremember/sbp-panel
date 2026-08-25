@@ -31,6 +31,72 @@ func testStore(t *testing.T) *Store {
 	return s
 }
 
+func TestOpenReconcilesCurrentCredentialColumnsWithoutVersionChain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE devices (id INTEGER PRIMARY KEY, group_id INTEGER NOT NULL, name TEXT NOT NULL, method TEXT NOT NULL DEFAULT 'xray', credential_format TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, last_seen_at TEXT, created_at TEXT NOT NULL);
+CREATE TABLE credentials (id INTEGER PRIMARY KEY, device_id INTEGER NOT NULL, protocol TEXT NOT NULL, public_id TEXT NOT NULL, secret_blob BLOB, enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(device_id, protocol));
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	columns := map[string]bool{}
+	rows, err := store.DB.Query(`PRAGMA table_info(credentials)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = true
+	}
+	rows.Close()
+	if !columns["profile_generation"] || !columns["protocol_version"] {
+		t.Fatalf("current profile columns were not reconciled: %#v", columns)
+	}
+}
+
+func TestUpdateDeviceProfilesIsAtomic(t *testing.T) {
+	s := testStore(t)
+	groupID, err := s.CreateGroup("Family", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, err := s.CreateDevice(groupID, "First", "xray", "vless://first@example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDeviceProfiles([]DeviceProfileUpdate{
+		{DeviceID: firstID, Name: "Updated", Credential: "vless://updated@example", ProfileGeneration: 1, ProtocolVersion: "26.3.27"},
+		{DeviceID: 999999, Name: "Missing", Credential: "vless://missing@example", ProfileGeneration: 1, ProtocolVersion: "26.3.27"},
+	}); err == nil {
+		t.Fatal("profile transaction unexpectedly succeeded")
+	}
+	device, err := s.Device(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.Name != "First" || device.Credential != "vless://first@example" || device.ProfileGeneration != 0 || device.ProtocolVersion != "" {
+		t.Fatalf("failed profile transaction was partially applied: %#v", device)
+	}
+}
+
 func TestPasswordRoundTrip(t *testing.T) {
 	h, err := HashPassword("12345678")
 	if err != nil {

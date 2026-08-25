@@ -116,6 +116,7 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("POST /api/groups/{id}/devices", admin(s.createDevice))
 	m.Handle("PUT /api/devices/{id}/enabled", admin(s.toggleDevice))
 	m.Handle("PUT /api/devices/{id}", admin(s.updateDevice))
+	m.Handle("POST /api/devices/{id}/profile", admin(s.updateDeviceProfile))
 	m.Handle("DELETE /api/devices/{id}", admin(s.deleteDevice))
 	m.Handle("GET /api/devices/{id}/credential", auth(s.deviceCredential))
 	m.Handle("GET /api/devices/{id}/qr", auth(s.deviceQR))
@@ -508,27 +509,43 @@ func (s *server) reconcileGroupAccessLocked(groupID int64) error {
 		return err
 	}
 	if desired {
+		legacy := map[string]string{}
 		for _, device := range devices {
-			if device.Enabled && !isBypassMethod(device.Method) {
+			if !device.Enabled {
+				continue
+			}
+			if isBypassMethod(device.Method) && device.ProfileGeneration < 1 {
+				legacy[device.Method] = device.Credential
+				continue
+			}
+			if !isBypassMethod(device.Method) || device.ProfileGeneration >= 1 {
 				if err := s.controlCredential(device, true); err != nil {
 					return fmt.Errorf("failed to restore %q: %w", device.Name, err)
 				}
 			}
 		}
-		for _, method := range uniqueBypassMethods(devices) {
-			if _, err := s.provisionCredential(groupID, group.Name, method); err != nil {
+		for method, credential := range legacy {
+			if err := s.restoreSharedBypassRoom(groupID, method, credential); err != nil {
 				return fmt.Errorf("failed to restore the %s room: %w", strings.TrimPrefix(method, "bypass-"), err)
 			}
 		}
 	} else {
+		legacy := map[string]bool{}
 		for _, device := range devices {
-			if device.Enabled && !isBypassMethod(device.Method) {
+			if !device.Enabled {
+				continue
+			}
+			if isBypassMethod(device.Method) && device.ProfileGeneration < 1 {
+				legacy[device.Method] = true
+				continue
+			}
+			if !isBypassMethod(device.Method) || device.ProfileGeneration >= 1 {
 				if err := s.controlCredential(device, false); err != nil {
 					return fmt.Errorf("failed to suspend %q: %w", device.Name, err)
 				}
 			}
 		}
-		for _, method := range uniqueBypassMethods(devices) {
+		for method := range legacy {
 			if err := s.removeBypassRoom(groupID, method, true); err != nil {
 				return fmt.Errorf("failed to suspend the %s room: %w", strings.TrimPrefix(method, "bypass-"), err)
 			}
@@ -648,8 +665,24 @@ func (s *server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	var malformed []string
 	xrayDevices := map[string][]store.Device{}
+	legacyBypassMethods := map[string]string{}
+	var deviceBypassRooms []store.Device
 	for _, device := range devices {
-		if !device.Enabled || isBypassMethod(device.Method) {
+		if isBypassMethod(device.Method) {
+			if device.ProfileGeneration < 1 {
+				legacyBypassMethods[device.Method] = device.Credential
+			} else {
+				if device.Enabled && groupAccessEnabled(group) {
+					if err := s.controlCredential(device, false); err != nil {
+						fail(w, 400, fmt.Errorf("failed to stop room %q: %w", device.Name, err))
+						return
+					}
+				}
+				deviceBypassRooms = append(deviceBypassRooms, device)
+			}
+			continue
+		}
+		if !device.Enabled {
 			continue
 		}
 		if device.Method == "xray" || device.Method == "xray-xhttp" {
@@ -679,14 +712,25 @@ func (s *server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	bypassMethods := uniqueBypassMethods(devices)
-	for _, method := range bypassMethods {
+	bypassMethods := make([]string, 0, len(legacyBypassMethods))
+	for method := range legacyBypassMethods {
+		bypassMethods = append(bypassMethods, method)
 		if err := s.removeBypassRoom(id, method, true); err != nil {
 			fail(w, 400, fmt.Errorf("failed to remove the dedicated bypass room: %w", err))
 			return
 		}
 	}
 	if err := s.db.DeleteGroup(id); err != nil {
+		if groupAccessEnabled(group) {
+			for _, device := range deviceBypassRooms {
+				if device.Enabled {
+					_ = s.controlCredential(device, true)
+				}
+			}
+			for method, credential := range legacyBypassMethods {
+				_ = s.restoreSharedBypassRoom(id, method, credential)
+			}
+		}
 		fail(w, 400, err)
 		return
 	}
@@ -695,6 +739,11 @@ func (s *server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	for _, method := range bypassMethods {
 		if err := s.removeBypassRoom(id, method, false); err != nil {
 			cleanupWarnings = append(cleanupWarnings, strings.TrimPrefix(method, "bypass-")+": "+err.Error())
+		}
+	}
+	for _, device := range deviceBypassRooms {
+		if err := s.removeBypassDeviceRoom(device, false); err != nil {
+			cleanupWarnings = append(cleanupWarnings, device.Name+": "+err.Error())
 		}
 	}
 	if len(malformed) > 0 {
@@ -748,27 +797,33 @@ func (s *server) createDevice(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, fmt.Errorf("device %q already exists in this group for the selected protocol", existing.Name))
 		return
 	}
-	credential, err := s.provisionCredential(gid, in.Name, in.Method)
+	id, err := s.db.ReserveDevice(gid, in.Name, in.Method, in.Format)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	id, err := s.db.CreateDevice(gid, in.Name, in.Method, credential, in.Format)
+	profile, err := s.provisionCredential(id, gid, in.Name, in.Method)
 	if err != nil {
-		// A bypass room belongs to the whole group. Never remove an existing
-		// shared room when a single device row fails to insert.
-		if !isBypassMethod(in.Method) {
-			_ = s.controlCredential(store.Device{Name: in.Name, Method: in.Method, Credential: credential, Enabled: true}, false)
+		_ = s.db.DeleteDevice(id)
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.db.SetDeviceCredential(id, profile.Credential, profile.ProfileGeneration, profile.ProtocolVersion); err != nil {
+		device := store.Device{ID: id, GroupID: gid, Name: in.Name, Method: in.Method, Format: in.Format, Credential: profile.Credential, ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion, Enabled: true}
+		_ = s.controlCredential(device, false)
+		if isBypassMethod(in.Method) {
+			_ = s.removeBypassDeviceRoom(device, false)
 		}
-		fail(w, http.StatusBadRequest, err)
+		_ = s.db.DeleteDevice(id)
+		fail(w, http.StatusInternalServerError, fmt.Errorf("profile was prepared but could not be persisted: %w", err))
 		return
 	}
-	device := store.Device{ID: id, GroupID: gid, Name: in.Name, Method: in.Method, Format: in.Format, Credential: credential, Enabled: true}
+	device := store.Device{ID: id, GroupID: gid, Name: in.Name, Method: in.Method, Format: in.Format, Credential: profile.Credential, ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion, Enabled: true}
 	group, groupErr := s.db.Group(gid)
 	if groupErr == nil && !groupAccessEnabled(group) {
 		var suspendErr error
 		if isBypassMethod(in.Method) {
-			suspendErr = s.removeBypassRoom(gid, in.Method, true)
+			suspendErr = s.removeBypassDeviceRoom(device, true)
 		} else {
 			suspendErr = s.controlCredential(device, false)
 		}
@@ -778,35 +833,78 @@ func (s *server) createDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	jsonOut(w, http.StatusCreated, map[string]any{"ok": true, "id": id, "credential": displayCredential(device)})
+	jsonOut(w, http.StatusCreated, map[string]any{"ok": true, "id": id, "credential": displayCredential(device), "profile_generation": profile.ProfileGeneration, "protocol_version": profile.ProtocolVersion})
 }
 
-func (s *server) provisionCredential(groupID int64, name, method string) (string, error) {
+type renderedProfile struct {
+	Credential        string `json:"credential"`
+	ProfileGeneration int    `json:"profile_generation"`
+	ProtocolVersion   string `json:"protocol_version"`
+}
+
+func (s *server) provisionCredential(deviceID, groupID int64, name, method string) (renderedProfile, error) {
 	group, err := s.db.Group(groupID)
 	if err != nil {
-		return "", fmt.Errorf("load credential group: %w", err)
+		return renderedProfile{}, fmt.Errorf("load credential group: %w", err)
 	}
 	profileName := fmt.Sprintf("SBP · %s · %s", strings.TrimSpace(group.Name), strings.TrimSpace(name))
-	payload, _ := json.Marshal(map[string]any{"name": profileName, "method": method, "group_id": groupID})
+	payload, _ := json.Marshal(map[string]any{"name": profileName, "method": method, "group_id": groupID, "device_id": deviceID})
 	req, _ := http.NewRequest("POST", "http://unix/v1/credentials", strings.NewReader(string(payload)))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.agent.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("agent unavailable: %w", err)
+		return renderedProfile{}, fmt.Errorf("agent unavailable: %w", err)
 	}
 	defer resp.Body.Close()
 	var provisioned struct {
-		OK         bool   `json:"ok"`
-		Credential string `json:"credential"`
-		Error      string `json:"error"`
+		OK bool `json:"ok"`
+		renderedProfile
+		Error string `json:"error"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&provisioned) != nil || resp.StatusCode != http.StatusOK || !provisioned.OK {
 		if provisioned.Error == "" {
 			provisioned.Error = "failed to create a credential for the selected method"
 		}
-		return "", errors.New(provisioned.Error)
+		return renderedProfile{}, errors.New(provisioned.Error)
 	}
-	return provisioned.Credential, nil
+	if strings.TrimSpace(provisioned.Credential) == "" || provisioned.ProfileGeneration < 1 || strings.TrimSpace(provisioned.ProtocolVersion) == "" {
+		return renderedProfile{}, errors.New("agent returned incomplete profile metadata")
+	}
+	return provisioned.renderedProfile, nil
+}
+
+func (s *server) refreshProfile(device store.Device, name string) (renderedProfile, error) {
+	group, err := s.db.Group(device.GroupID)
+	if err != nil {
+		return renderedProfile{}, fmt.Errorf("load credential group: %w", err)
+	}
+	profileName := fmt.Sprintf("SBP · %s · %s", strings.TrimSpace(group.Name), strings.TrimSpace(name))
+	payload, _ := json.Marshal(map[string]any{
+		"name": profileName, "method": device.Method, "credential": device.Credential,
+		"current_generation": device.ProfileGeneration, "group_id": device.GroupID, "device_id": device.ID,
+	})
+	req, _ := http.NewRequest(http.MethodPut, "http://unix/v1/profiles", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		return renderedProfile{}, fmt.Errorf("agent unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	var refreshed struct {
+		OK bool `json:"ok"`
+		renderedProfile
+		Error string `json:"error"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&refreshed) != nil || resp.StatusCode != http.StatusOK || !refreshed.OK {
+		if refreshed.Error == "" {
+			refreshed.Error = "failed to refresh the selected profile"
+		}
+		return renderedProfile{}, errors.New(refreshed.Error)
+	}
+	if strings.TrimSpace(refreshed.Credential) == "" || refreshed.ProfileGeneration < 1 || strings.TrimSpace(refreshed.ProtocolVersion) == "" {
+		return renderedProfile{}, errors.New("agent returned incomplete profile metadata")
+	}
+	return refreshed.renderedProfile, nil
 }
 
 func normalizeDeviceMethod(method, format string) (string, string) {
@@ -871,11 +969,187 @@ func (s *server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, err)
 		return
 	}
+	if strings.TrimSpace(in.Name) == "" {
+		fail(w, http.StatusBadRequest, errors.New("name is required"))
+		return
+	}
 	if err := s.db.UpdateDevice(id, current.GroupID, in.Name); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) updateDeviceProfile(w http.ResponseWriter, r *http.Request) {
+	id, err := numParam(r, "id")
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+	current, err := s.db.Device(id)
+	if err != nil {
+		fail(w, http.StatusNotFound, err)
+		return
+	}
+	if isBypassMethod(current.Method) && current.ProfileGeneration < 1 {
+		s.refreshSharedBypassProfiles(w, current)
+		return
+	}
+	if current.Method == "amneziawg" {
+		s.refreshAmneziaWGProfiles(w, current)
+		return
+	}
+	profile, err := s.refreshProfile(current, current.Name)
+	if err != nil {
 		fail(w, 400, err)
 		return
 	}
-	jsonOut(w, 200, map[string]any{"ok": true})
+	if err := s.db.UpdateDeviceProfiles([]store.DeviceProfileUpdate{{
+		DeviceID: id, Name: current.Name, Credential: profile.Credential,
+		ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion,
+	}}); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	current.Credential = profile.Credential
+	current.ProfileGeneration = profile.ProfileGeneration
+	current.ProtocolVersion = profile.ProtocolVersion
+	result := map[string]any{
+		"ok": true, "credential": displayCredential(current),
+		"profile_generation": profile.ProfileGeneration, "protocol_version": profile.ProtocolVersion,
+	}
+	if isBypassMethod(current.Method) {
+		remaining, countErr := s.db.CountProfilesBeforeGeneration(current.GroupID, current.Method, profile.ProfileGeneration)
+		if countErr != nil {
+			result["warning"] = "Profile refreshed, but obsolete shared-room cleanup could not be checked: " + countErr.Error()
+		} else if remaining == 0 {
+			if err := s.removeBypassRoom(current.GroupID, current.Method, false); err != nil {
+				result["warning"] = "Profile refreshed, but the obsolete shared room still needs cleanup: " + err.Error()
+			}
+		}
+	}
+	jsonOut(w, 200, result)
+}
+
+// refreshAmneziaWGProfiles keeps the server-wide client set on one renderer
+// generation. Rendering is read-only; the complete set is published only
+// after every profile has been validated successfully.
+func (s *server) refreshAmneziaWGProfiles(w http.ResponseWriter, selected store.Device) {
+	devices, err := s.db.ListAllDevices()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	updates := make([]store.DeviceProfileUpdate, 0)
+	var selectedProfile renderedProfile
+	for _, device := range devices {
+		if device.Method != selected.Method {
+			continue
+		}
+		profile, err := s.refreshProfile(device, device.Name)
+		if err != nil {
+			fail(w, http.StatusBadRequest, fmt.Errorf("refresh AmneziaWG profile %q: %w", device.Name, err))
+			return
+		}
+		updates = append(updates, store.DeviceProfileUpdate{
+			DeviceID: device.ID, Name: device.Name, Credential: profile.Credential,
+			ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion,
+		})
+		if device.ID == selected.ID {
+			selectedProfile = profile
+		}
+	}
+	if len(updates) == 0 || strings.TrimSpace(selectedProfile.Credential) == "" {
+		fail(w, http.StatusConflict, errors.New("no AmneziaWG profiles are available to update"))
+		return
+	}
+	if err := s.db.UpdateDeviceProfiles(updates); err != nil {
+		fail(w, http.StatusInternalServerError, fmt.Errorf("publish updated AmneziaWG profiles: %w", err))
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{
+		"ok": true, "credential": displayCredential(store.Device{Method: selected.Method, Format: selected.Format, Credential: selectedProfile.Credential}),
+		"profile_generation": selectedProfile.ProfileGeneration, "protocol_version": selectedProfile.ProtocolVersion,
+		"updated_profiles": len(updates), "update_scope": "method",
+	})
+}
+
+// refreshSharedBypassProfiles is the sole current-format conversion boundary.
+// It replaces every device that still references the one historical shared
+// group room before removing that obsolete resource.
+func (s *server) refreshSharedBypassProfiles(w http.ResponseWriter, selected store.Device) {
+	devices, err := s.db.ListDevices(selected.GroupID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	affected := make([]store.Device, 0)
+	for _, device := range devices {
+		if device.Method == selected.Method && device.ProfileGeneration < 1 {
+			affected = append(affected, device)
+		}
+	}
+	if len(affected) == 0 {
+		fail(w, http.StatusConflict, errors.New("the shared room was already refreshed; reload the dashboard"))
+		return
+	}
+	group, err := s.db.Group(selected.GroupID)
+	if err != nil {
+		fail(w, http.StatusNotFound, err)
+		return
+	}
+	prepared := make([]store.Device, 0, len(affected))
+	updates := make([]store.DeviceProfileUpdate, 0, len(affected))
+	var selectedProfile renderedProfile
+	for _, device := range affected {
+		profile, err := s.refreshProfile(device, device.Name)
+		if err != nil {
+			for _, replacement := range prepared {
+				_ = s.removeBypassDeviceRoom(replacement, false)
+			}
+			fail(w, http.StatusBadRequest, fmt.Errorf("prepare a dedicated room for %q: %w", device.Name, err))
+			return
+		}
+		replacement := device
+		replacement.Credential = profile.Credential
+		replacement.ProfileGeneration = profile.ProfileGeneration
+		replacement.ProtocolVersion = profile.ProtocolVersion
+		if !device.Enabled || !groupAccessEnabled(group) {
+			if err := s.removeBypassDeviceRoom(replacement, true); err != nil {
+				for _, cleanup := range append(prepared, replacement) {
+					_ = s.removeBypassDeviceRoom(cleanup, false)
+				}
+				fail(w, http.StatusBadGateway, fmt.Errorf("keep refreshed room %q suspended: %w", device.Name, err))
+				return
+			}
+		}
+		prepared = append(prepared, replacement)
+		updates = append(updates, store.DeviceProfileUpdate{
+			DeviceID: device.ID, Name: device.Name, Credential: profile.Credential,
+			ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion,
+		})
+		if device.ID == selected.ID {
+			selectedProfile = profile
+		}
+	}
+	if err := s.db.UpdateDeviceProfiles(updates); err != nil {
+		for _, replacement := range prepared {
+			_ = s.removeBypassDeviceRoom(replacement, false)
+		}
+		fail(w, http.StatusInternalServerError, fmt.Errorf("publish refreshed routing profiles: %w", err))
+		return
+	}
+	result := map[string]any{
+		"ok": true, "credential": displayCredential(store.Device{Method: selected.Method, Format: selected.Format, Credential: selectedProfile.Credential}),
+		"profile_generation": selectedProfile.ProfileGeneration, "protocol_version": selectedProfile.ProtocolVersion,
+		"updated_profiles": len(updates),
+	}
+	if err := s.removeBypassRoom(selected.GroupID, selected.Method, false); err != nil {
+		result["warning"] = "Profiles were refreshed, but the obsolete shared room still needs cleanup: " + err.Error()
+	}
+	jsonOut(w, http.StatusOK, result)
 }
 
 func (s *server) deviceQR(w http.ResponseWriter, r *http.Request) {
@@ -977,17 +1251,26 @@ func (s *server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	lastBypassRoom := false
+	deviceBypassRoom := false
 	if isBypassMethod(d.Method) {
-		remaining, err := s.db.CountDevicesByGroupMethod(d.GroupID, d.Method)
-		if err != nil {
-			fail(w, http.StatusInternalServerError, err)
-			return
-		}
-		lastBypassRoom = remaining == 1
-		if lastBypassRoom {
-			if err := s.removeBypassRoom(d.GroupID, d.Method, true); err != nil {
+		if d.ProfileGeneration >= 1 {
+			deviceBypassRoom = true
+			if err := s.removeBypassDeviceRoom(d, true); err != nil {
 				fail(w, 400, fmt.Errorf("the device was not removed because its room could not be stopped: %w", err))
 				return
+			}
+		} else {
+			remaining, err := s.db.CountProfilesBeforeGeneration(d.GroupID, d.Method, 1)
+			if err != nil {
+				fail(w, http.StatusInternalServerError, err)
+				return
+			}
+			lastBypassRoom = remaining == 1
+			if lastBypassRoom {
+				if err := s.removeBypassRoom(d.GroupID, d.Method, true); err != nil {
+					fail(w, 400, fmt.Errorf("the device was not removed because its room could not be stopped: %w", err))
+					return
+				}
 			}
 		}
 	}
@@ -995,8 +1278,11 @@ func (s *server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		if revoked {
 			_ = s.controlCredential(d, true)
 		}
+		if deviceBypassRoom && groupAccessEnabled(group) {
+			_ = s.controlCredential(d, true)
+		}
 		if lastBypassRoom && groupAccessEnabled(group) {
-			_, _ = s.provisionCredential(d.GroupID, d.Name, d.Method)
+			_ = s.restoreSharedBypassRoom(d.GroupID, d.Method, d.Credential)
 		}
 		fail(w, 400, err)
 		return
@@ -1004,6 +1290,11 @@ func (s *server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 	result := map[string]any{"ok": true}
 	if lastBypassRoom {
 		if err := s.removeBypassRoom(d.GroupID, d.Method, false); err != nil {
+			warning = "Device removed. Its stopped room data could not be cleared automatically: " + err.Error()
+		}
+	}
+	if deviceBypassRoom {
+		if err := s.removeBypassDeviceRoom(d, false); err != nil {
 			warning = "Device removed. Its stopped room data could not be cleared automatically: " + err.Error()
 		}
 	}
@@ -1063,8 +1354,57 @@ func (s *server) removeBypassRoom(groupID int64, method string, preserve bool) e
 	return nil
 }
 
+func (s *server) restoreSharedBypassRoom(groupID int64, method, credential string) error {
+	provider := strings.TrimPrefix(method, "bypass-")
+	payload, _ := json.Marshal(map[string]string{"credential": credential})
+	path := fmt.Sprintf("http://unix/v1/bypass/rooms/%d/%s", groupID, provider)
+	req, _ := http.NewRequest(http.MethodPut, path, strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		return fmt.Errorf("agent unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var result struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&result)
+		if result.Error == "" {
+			result.Error = "agent rejected shared room restore"
+		}
+		return errors.New(result.Error)
+	}
+	return nil
+}
+
+func (s *server) removeBypassDeviceRoom(device store.Device, preserve bool) error {
+	provider := strings.TrimPrefix(device.Method, "bypass-")
+	path := fmt.Sprintf("http://unix/v1/bypass/rooms/%d/%s/%d", device.GroupID, provider, device.ID)
+	if preserve {
+		path += "?preserve=true"
+	}
+	req, _ := http.NewRequest(http.MethodDelete, path, nil)
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		return fmt.Errorf("agent unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var result struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&result)
+		if result.Error == "" {
+			result.Error = "agent rejected device room removal"
+		}
+		return errors.New(result.Error)
+	}
+	return nil
+}
+
 func (s *server) controlCredential(d store.Device, enabled bool) error {
-	b, _ := json.Marshal(map[string]any{"Name": d.Name, "Method": d.Method, "Credential": d.Credential, "Enabled": enabled})
+	b, _ := json.Marshal(map[string]any{"Name": d.Name, "Method": d.Method, "Credential": d.Credential, "Enabled": enabled, "group_id": d.GroupID, "device_id": d.ID})
 	req, _ := http.NewRequest("PUT", "http://unix/v1/credentials", strings.NewReader(string(b)))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.agent.Do(req)
@@ -1169,21 +1509,33 @@ func (s *server) metrics(w http.ResponseWriter, r *http.Request) {
 }
 
 type bypassRoomSummary struct {
-	GroupID   int64  `json:"group_id"`
-	GroupName string `json:"group_name"`
-	Provider  string `json:"provider"`
-	Code      string `json:"code"`
+	GroupID    int64  `json:"group_id"`
+	GroupName  string `json:"group_name"`
+	DeviceID   int64  `json:"device_id,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+	Provider   string `json:"provider"`
+	Code       string `json:"code"`
 }
 
-func nameBypassRooms(rooms []bypassRoomSummary, groups []store.Group) []bypassRoomSummary {
+func nameBypassRooms(rooms []bypassRoomSummary, groups []store.Group, devices []store.Device) []bypassRoomSummary {
 	names := make(map[int64]string, len(groups))
 	for _, group := range groups {
 		names[group.ID] = group.Name
+	}
+	deviceNames := make(map[int64]string, len(devices))
+	for _, device := range devices {
+		deviceNames[device.ID] = device.Name
 	}
 	for index := range rooms {
 		rooms[index].GroupName = names[rooms[index].GroupID]
 		if rooms[index].GroupName == "" {
 			rooms[index].GroupName = fmt.Sprintf("Unknown group #%d", rooms[index].GroupID)
+		}
+		if rooms[index].DeviceID > 0 {
+			rooms[index].DeviceName = deviceNames[rooms[index].DeviceID]
+			if rooms[index].DeviceName == "" {
+				rooms[index].DeviceName = fmt.Sprintf("Unknown device #%d", rooms[index].DeviceID)
+			}
 		}
 	}
 	sort.Slice(rooms, func(left, right int) bool {
@@ -1194,6 +1546,9 @@ func nameBypassRooms(rooms []bypassRoomSummary, groups []store.Group) []bypassRo
 		}
 		if rooms[left].Provider != rooms[right].Provider {
 			return rooms[left].Provider < rooms[right].Provider
+		}
+		if rooms[left].DeviceName != rooms[right].DeviceName {
+			return strings.ToLower(rooms[left].DeviceName) < strings.ToLower(rooms[right].DeviceName)
 		}
 		return rooms[left].Code < rooms[right].Code
 	})
@@ -1226,7 +1581,12 @@ func (s *server) bypassRooms(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "rooms": nameBypassRooms(result.Rooms, groups)})
+	devices, err := s.db.ListAllDeviceMetadata()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "rooms": nameBypassRooms(result.Rooms, groups, devices)})
 }
 
 func (s *server) updateInfo(w http.ResponseWriter, r *http.Request) {

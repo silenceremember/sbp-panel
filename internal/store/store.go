@@ -44,16 +44,26 @@ type Group struct {
 }
 
 type Device struct {
-	ID         int64  `json:"id"`
-	GroupID    int64  `json:"group_id"`
-	Name       string `json:"name"`
-	Method     string `json:"method"`
-	Format     string `json:"format,omitempty"`
-	Credential string `json:"credential,omitempty"`
-	Enabled    bool   `json:"enabled"`
-	LastSeenAt string `json:"last_seen_at,omitempty"`
-	RXBytes    int64  `json:"rx_bytes"`
-	TXBytes    int64  `json:"tx_bytes"`
+	ID                int64  `json:"id"`
+	GroupID           int64  `json:"group_id"`
+	Name              string `json:"name"`
+	Method            string `json:"method"`
+	Format            string `json:"format,omitempty"`
+	Credential        string `json:"credential,omitempty"`
+	ProfileGeneration int    `json:"profile_generation"`
+	ProtocolVersion   string `json:"protocol_version"`
+	Enabled           bool   `json:"enabled"`
+	LastSeenAt        string `json:"last_seen_at,omitempty"`
+	RXBytes           int64  `json:"rx_bytes"`
+	TXBytes           int64  `json:"tx_bytes"`
+}
+
+type DeviceProfileUpdate struct {
+	DeviceID          int64
+	Name              string
+	Credential        string
+	ProfileGeneration int
+	ProtocolVersion   string
 }
 
 type DeviceTrafficSample struct {
@@ -64,8 +74,8 @@ type DeviceTrafficSample struct {
 	TXBytes  int64
 }
 
-const deviceSelect = `SELECT d.id,d.group_id,d.name,d.method,d.credential_format,d.enabled,COALESCE(d.last_seen_at,''),COALESCE(t.rx_bytes,0),COALESCE(t.tx_bytes,0),COALESCE(CAST(c.secret_blob AS TEXT),'') FROM devices d LEFT JOIN traffic_current t ON t.scope_type='device' AND t.scope_id=d.id AND t.protocol='all' AND t.month_key=strftime('%Y-%m','now') LEFT JOIN credentials c ON c.device_id=d.id AND c.protocol=d.method`
-const deviceMetadataSelect = `SELECT d.id,d.group_id,d.name,d.method,d.credential_format,d.enabled,COALESCE(d.last_seen_at,''),COALESCE(t.rx_bytes,0),COALESCE(t.tx_bytes,0),'' FROM devices d LEFT JOIN traffic_current t ON t.scope_type='device' AND t.scope_id=d.id AND t.protocol='all' AND t.month_key=strftime('%Y-%m','now')`
+const deviceSelect = `SELECT d.id,d.group_id,d.name,d.method,d.credential_format,d.enabled,COALESCE(d.last_seen_at,''),COALESCE(t.rx_bytes,0),COALESCE(t.tx_bytes,0),COALESCE(CAST(c.secret_blob AS TEXT),''),COALESCE(c.profile_generation,0),COALESCE(c.protocol_version,'') FROM devices d LEFT JOIN traffic_current t ON t.scope_type='device' AND t.scope_id=d.id AND t.protocol='all' AND t.month_key=strftime('%Y-%m','now') LEFT JOIN credentials c ON c.device_id=d.id AND c.protocol=d.method`
+const deviceMetadataSelect = `SELECT d.id,d.group_id,d.name,d.method,d.credential_format,d.enabled,COALESCE(d.last_seen_at,''),COALESCE(t.rx_bytes,0),COALESCE(t.tx_bytes,0),'',COALESCE(c.profile_generation,0),COALESCE(c.protocol_version,'') FROM devices d LEFT JOIN traffic_current t ON t.scope_type='device' AND t.scope_id=d.id AND t.protocol='all' AND t.month_key=strftime('%Y-%m','now') LEFT JOIN credentials c ON c.device_id=d.id AND c.protocol=d.method`
 const maxAccountSessions = 64
 
 type rowScanner interface {
@@ -75,7 +85,7 @@ type rowScanner interface {
 func scanDevice(row rowScanner) (Device, error) {
 	var d Device
 	var enabled int
-	err := row.Scan(&d.ID, &d.GroupID, &d.Name, &d.Method, &d.Format, &enabled, &d.LastSeenAt, &d.RXBytes, &d.TXBytes, &d.Credential)
+	err := row.Scan(&d.ID, &d.GroupID, &d.Name, &d.Method, &d.Format, &enabled, &d.LastSeenAt, &d.RXBytes, &d.TXBytes, &d.Credential, &d.ProfileGeneration, &d.ProtocolVersion)
 	d.Enabled = enabled == 1
 	return d, err
 }
@@ -114,6 +124,7 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE TABLE IF NOT EXISTS credentials (
  id INTEGER PRIMARY KEY, device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
  protocol TEXT NOT NULL, public_id TEXT NOT NULL, secret_blob BLOB, enabled INTEGER NOT NULL DEFAULT 1,
+ profile_generation INTEGER NOT NULL DEFAULT 0, protocol_version TEXT NOT NULL DEFAULT '',
  UNIQUE(device_id, protocol)
 );
 CREATE TABLE IF NOT EXISTS traffic_current (
@@ -131,7 +142,49 @@ CREATE TABLE IF NOT EXISTS bypass_providers (
  room_link TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'not_installed'
 );
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.reconcileCredentialColumns()
+}
+
+// reconcileCredentialColumns compares the live table with the current desired
+// shape. It deliberately avoids a release-by-release migration chain.
+func (s *Store) reconcileCredentialColumns() error {
+	rows, err := s.DB.Query(`PRAGMA table_info(credentials)`)
+	if err != nil {
+		return err
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, definition := range []struct {
+		name string
+		sql  string
+	}{
+		{"profile_generation", `ALTER TABLE credentials ADD COLUMN profile_generation INTEGER NOT NULL DEFAULT 0`},
+		{"protocol_version", `ALTER TABLE credentials ADD COLUMN protocol_version TEXT NOT NULL DEFAULT ''`},
+	} {
+		if columns[definition.name] {
+			continue
+		}
+		if _, err := s.DB.Exec(definition.sql); err != nil {
+			return fmt.Errorf("add credentials.%s: %w", definition.name, err)
+		}
+	}
+	return nil
 }
 
 func RandomToken(n int) (string, error) {
@@ -621,9 +674,9 @@ func (s *Store) CountDevicesByMethod(method string) (int, error) {
 	return count, err
 }
 
-func (s *Store) CountDevicesByGroupMethod(groupID int64, method string) (int, error) {
+func (s *Store) CountProfilesBeforeGeneration(groupID int64, method string, generation int) (int, error) {
 	var count int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM devices WHERE group_id=? AND method=?`, groupID, method).Scan(&count)
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM devices d LEFT JOIN credentials c ON c.device_id=d.id AND c.protocol=d.method WHERE d.group_id=? AND d.method=? AND COALESCE(c.profile_generation,0)<?`, groupID, method, generation).Scan(&count)
 	return count, err
 }
 
@@ -779,31 +832,97 @@ func (s *Store) CreateDevice(groupID int64, name string, args ...string) (int64,
 	if err := s.ValidateDevice(groupID, name, method, format); err != nil {
 		return 0, err
 	}
-	tx, err := s.DB.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	if method == "amneziawg" && format != "native" && format != "app" {
-		format = "native"
-	}
-	r, err := tx.Exec(`INSERT INTO devices(group_id,name,method,credential_format,created_at) VALUES(?,?,?,?,?)`, groupID, name, method, format, time.Now().UTC().Format(time.RFC3339))
-	if err != nil {
-		return 0, err
-	}
-	id, err := r.LastInsertId()
+	id, err := s.ReserveDevice(groupID, name, method, format)
 	if err != nil {
 		return 0, err
 	}
 	if credential != "" {
-		if _, err := tx.Exec(`INSERT INTO credentials(device_id,protocol,public_id,secret_blob) VALUES(?,?,?,?)`, id, method, fmt.Sprintf("%d", id), []byte(credential)); err != nil {
+		if err := s.SetDeviceCredential(id, credential, 0, ""); err != nil {
+			_ = s.DeleteDevice(id)
 			return 0, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	return id, nil
+}
+
+// ReserveDevice persists the desired device identity before the agent creates
+// any external credential or routing resource. Callers must delete the row if
+// provisioning fails.
+func (s *Store) ReserveDevice(groupID int64, name, method, format string) (int64, error) {
+	name = strings.TrimSpace(name)
+	method = strings.TrimSpace(method)
+	format = strings.TrimSpace(format)
+	if err := s.ValidateDevice(groupID, name, method, format); err != nil {
 		return 0, err
 	}
-	return id, nil
+	if method == "amneziawg" && format != "native" && format != "app" {
+		format = "native"
+	}
+	r, err := s.DB.Exec(`INSERT INTO devices(group_id,name,method,credential_format,created_at) VALUES(?,?,?,?,?)`, groupID, name, method, format, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, err
+	}
+	return r.LastInsertId()
+}
+
+func (s *Store) SetDeviceCredential(id int64, credential string, generation int, version string) error {
+	if strings.TrimSpace(credential) == "" {
+		return errors.New("credential is required")
+	}
+	if generation < 0 {
+		return errors.New("profile generation cannot be negative")
+	}
+	var method string
+	if err := s.DB.QueryRow(`SELECT method FROM devices WHERE id=?`, id).Scan(&method); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("device not found")
+		}
+		return err
+	}
+	_, err := s.DB.Exec(`INSERT INTO credentials(device_id,protocol,public_id,secret_blob,profile_generation,protocol_version)
+		VALUES(?,?,?,?,?,?)
+		ON CONFLICT(device_id,protocol) DO UPDATE SET secret_blob=excluded.secret_blob,profile_generation=excluded.profile_generation,protocol_version=excluded.protocol_version`,
+		id, method, fmt.Sprintf("%d", id), []byte(credential), generation, strings.TrimSpace(version))
+	return err
+}
+
+// UpdateDeviceProfiles atomically publishes already validated rendered
+// profiles. External resources must be prepared before this transaction and
+// compensated by the caller if it fails.
+func (s *Store) UpdateDeviceProfiles(updates []DeviceProfileUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, update := range updates {
+		name := strings.TrimSpace(update.Name)
+		if name == "" || strings.TrimSpace(update.Credential) == "" || update.ProfileGeneration < 0 {
+			return errors.New("profile update is incomplete")
+		}
+		var method string
+		if err := tx.QueryRow(`SELECT method FROM devices WHERE id=?`, update.DeviceID).Scan(&method); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("device not found")
+			}
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE devices SET name=? WHERE id=?`, name, update.DeviceID); err != nil {
+			return err
+		}
+		result, err := tx.Exec(`UPDATE credentials SET secret_blob=?,profile_generation=?,protocol_version=? WHERE device_id=? AND protocol=?`,
+			[]byte(update.Credential), update.ProfileGeneration, strings.TrimSpace(update.ProtocolVersion), update.DeviceID, method)
+		if err != nil {
+			return err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return errors.New("device credential not found")
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ToggleDevice(id int64, enabled bool) error {

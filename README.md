@@ -110,7 +110,9 @@ https://YOUR_SERVER_IP:9443
 4. Add a device and select its connection method.
 5. Copy the profile or scan its QR code and import it into a client.
 
-Profiles use the readable name `SBP · Group name · Device name`. Routing integrations create one shared room for each group and provider.
+Profiles use the readable name `SBP · Group name · Device name`. Each profile also records its protocol version. **Edit** changes the device name, while **Update** refreshes its rendered profile with the current generator and preserves reusable identity material. Updating any AmneziaWG device rebuilds every AmneziaWG profile together so the server-wide client set remains on one generation. Copy or import a returned profile again when its rendered configuration changes.
+
+Routing integrations create one independent room for each device. A server upgraded from the former shared-room layout converts every affected profile in that group and provider together on the first **Update**, then removes the obsolete shared room after the replacements are stored.
 
 | Profile type | Suggested client |
 |---|---|
@@ -131,7 +133,7 @@ Profiles use the readable name `SBP · Group name · Device name`. Routing integ
 
 | Area | Behavior |
 |---|---|
-| Device changes | Xray and AmneziaWG credentials are applied live without restarting shared containers |
+| Device changes | Edit changes the name; Update refreshes the rendered profile and protocol version; an AmneziaWG update publishes all AWG profiles together; runtime membership still changes live without restarting shared containers |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
 | Component lifecycle | An active install or removal is restored after a browser reload and conflicting component or update actions remain disabled until it finishes |
 | Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |
@@ -140,7 +142,7 @@ Profiles use the readable name `SBP · Group name · Device name`. Routing integ
 | AmneziaWG settings | Server-side AWG obfuscation parameters are available before and after installation; profile-affecting changes are refused while peers exist |
 | Routing settings | Each routing component keeps its own cookie JSON upload, clear action, and saved rooms under **Components > Settings** |
 | Expiration | Expired groups are reconciled with runtime credentials and routing access |
-| Routing | One room is shared by each group and provider, not each device row |
+| Routing | One room and bounded managed container per device; traffic remains aggregated by group and provider |
 | Traffic | Current UTC month only; operational estimates, not billing records |
 | Persistent state | No historical traffic archive, automatic backups, editable source tree, or build toolchain |
 | Logs | Persistent managed Docker logging is disabled; SBP services do not write persistent application logs |

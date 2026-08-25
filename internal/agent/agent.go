@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/silenceremember/sbp-panel/internal/apiresponse"
@@ -48,6 +49,7 @@ type Discovery struct {
 
 type BypassRoom struct {
 	GroupID  int64  `json:"group_id"`
+	DeviceID int64  `json:"device_id,omitempty"`
 	Provider string `json:"provider"`
 	Code     string `json:"code"`
 }
@@ -127,6 +129,8 @@ const (
 	maxTrafficMeterEntries = 10000
 	maxTrafficMeterBytes   = 8 << 20
 )
+
+var bypassRoomContainerName = regexp.MustCompile(`^vpn-panel-bypass-(wb|telemost|dion|vk)-g([0-9]+)(?:-d[0-9]+)?$`)
 
 func newServerMonitor(path string) *serverMonitor {
 	m := &serverMonitor{path: path, activeRooms: map[string]bool{}}
@@ -317,17 +321,26 @@ func (m *serverMonitor) measure(persist bool) ServerMetrics {
 	if txEnd >= txStart {
 		result.TXBytesPerSecond = (txEnd - txStart) * 4
 	}
-	roomName := regexp.MustCompile(`^vpn-panel-bypass-(wb|telemost|dion|vk)-g([0-9]+)$`)
+	roomTotals := map[string]BypassRoomMetrics{}
 	for name, room := range state.Rooms {
 		if !activeRooms[name] {
 			continue
 		}
-		match := roomName.FindStringSubmatch(name)
+		match := bypassRoomContainerName.FindStringSubmatch(name)
 		if len(match) != 3 {
 			continue
 		}
 		groupID, _ := strconv.ParseInt(match[2], 10, 64)
-		result.BypassRooms = append(result.BypassRooms, BypassRoomMetrics{GroupID: groupID, Provider: "bypass-" + match[1], RXBytes: room.RXBytes, TXBytes: room.TXBytes})
+		key := match[1] + ":" + match[2]
+		total := roomTotals[key]
+		total.GroupID = groupID
+		total.Provider = "bypass-" + match[1]
+		total.RXBytes += room.RXBytes
+		total.TXBytes += room.TXBytes
+		roomTotals[key] = total
+	}
+	for _, total := range roomTotals {
+		result.BypassRooms = append(result.BypassRooms, total)
 	}
 	for key, meter := range state.Devices {
 		protocol, publicID, ok := strings.Cut(key, ":")
@@ -363,7 +376,7 @@ func readBypassContainerCounters() map[string][2]uint64 {
 			continue
 		}
 		name := strings.TrimSpace(fmt.Sprint(row["Name"]))
-		if !regexp.MustCompile(`^vpn-panel-bypass-(wb|telemost|dion|vk)-g[0-9]+$`).MatchString(name) {
+		if !bypassRoomContainerName.MatchString(name) {
 			continue
 		}
 		parts := strings.Split(fmt.Sprint(row["NetIO"]), "/")
@@ -722,10 +735,10 @@ func componentStates(d Discovery, bbr bool) []Component {
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
 		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, Version: awgVersion, Description: "Provides an AmneziaWG 2.0 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
-		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated WB Stream connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: wbNote},
-		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated Yandex Telemost connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
-		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated DION connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: dionNote},
-		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated VK Calls connection per group with group-level traffic tracking. Requires uploaded account cookies.", Note: vkNote},
+		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated WB Stream connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: wbNote},
+		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated Yandex Telemost connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
+		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated DION connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: dionNote},
+		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", Description: "Creates one dedicated VK Calls connection per device with group-level traffic tracking. Requires uploaded account cookies.", Note: vkNote},
 	}
 }
 
@@ -1115,7 +1128,7 @@ func bypassContainers(provider string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inventory Docker containers for %s: %w", provider, err)
 	}
-	pattern := regexp.MustCompile(`^` + regexp.QuoteMeta(spec.Container) + `-g[1-9][0-9]*(-init)?$`)
+	pattern := regexp.MustCompile(`^` + regexp.QuoteMeta(spec.Container) + `-g[1-9][0-9]*(?:-d[1-9][0-9]*)?(?:-init)?$`)
 	var names []string
 	for _, name := range strings.Split(strings.TrimSpace(output), "\n") {
 		if name = strings.TrimSpace(name); pattern.MatchString(name) {
@@ -2209,7 +2222,7 @@ func clearBypassCredentials(provider string, c config.Config) error {
 	if err := os.Remove(filepath.Join(c.BypassSecretsDir, provider, "cookies.json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	// Group room links are deliberately preserved. Uploading replacement
+	// Device room links are deliberately preserved. Uploading replacement
 	// cookies restarts those rooms without changing users or credentials.
 	_ = os.Remove(filepath.Join("/opt/vpn-panel-managed", "bypass-"+id, "cookies.json"))
 	return nil
@@ -2231,20 +2244,30 @@ func restartSavedBypassRooms(cookieProvider string, c config.Config) error {
 	var failures []error
 	for _, saved := range rooms {
 		container := fmt.Sprintf("%s-g%d", bypassSpecs[id].Container, saved.groupID)
+		if saved.deviceID > 0 {
+			container = bypassDeviceContainer(bypassSpecs[id], saved.groupID, saved.deviceID)
+		}
 		if output, err := run("docker", "rm", "-f", container); err != nil && !strings.Contains(strings.ToLower(output), "no such container") {
-			failures = append(failures, fmt.Errorf("group %d: remove old room: %w", saved.groupID, err))
+			failures = append(failures, fmt.Errorf("group %d device %d: remove old room: %w", saved.groupID, saved.deviceID, err))
 			continue
 		}
-		if err := startBypassRoom(id, saved.groupID, saved.room, c); err != nil {
-			failures = append(failures, fmt.Errorf("group %d: %w", saved.groupID, err))
+		var startErr error
+		if saved.deviceID > 0 {
+			startErr = startBypassDeviceRoom(id, saved.groupID, saved.deviceID, saved.room, c)
+		} else {
+			startErr = startBypassRoom(id, saved.groupID, saved.room, c)
+		}
+		if startErr != nil {
+			failures = append(failures, fmt.Errorf("group %d device %d: %w", saved.groupID, saved.deviceID, startErr))
 		}
 	}
 	return errors.Join(failures...)
 }
 
 type savedBypassRoom struct {
-	groupID int64
-	room    string
+	groupID  int64
+	deviceID int64
+	room     string
 }
 
 func savedBypassRooms(groupsDir string) ([]savedBypassRoom, error) {
@@ -2265,10 +2288,30 @@ func savedBypassRooms(groupsDir string) ([]savedBypassRoom, error) {
 			continue
 		}
 		room := lastNonEmptyLine(filepath.Join(groupsDir, entry.Name(), "call.txt"))
-		if room == "" {
+		if room != "" {
+			rooms = append(rooms, savedBypassRoom{groupID: groupID, room: room})
+		}
+		devicesDir := filepath.Join(groupsDir, entry.Name(), "devices")
+		devices, err := os.ReadDir(devicesDir)
+		if os.IsNotExist(err) {
 			continue
 		}
-		rooms = append(rooms, savedBypassRoom{groupID: groupID, room: room})
+		if err != nil {
+			return nil, err
+		}
+		for _, device := range devices {
+			if !device.IsDir() {
+				continue
+			}
+			deviceID, err := strconv.ParseInt(device.Name(), 10, 64)
+			if err != nil || deviceID < 1 {
+				continue
+			}
+			room := lastNonEmptyLine(filepath.Join(devicesDir, device.Name(), "call.txt"))
+			if room != "" {
+				rooms = append(rooms, savedBypassRoom{groupID: groupID, deviceID: deviceID, room: room})
+			}
+		}
 	}
 	return rooms, nil
 }
@@ -2299,6 +2342,7 @@ func listSavedBypassRooms(managedRoot string) ([]BypassRoom, error) {
 		for _, room := range rooms {
 			result = append(result, BypassRoom{
 				GroupID:  room.groupID,
+				DeviceID: room.deviceID,
 				Provider: bypassSpecs[provider].CookieProvider,
 				Code:     bypassRoomCode(room.room),
 			})
@@ -2342,7 +2386,7 @@ func installWhitelistBypass(provider string, c config.Config) (string, error) {
 		return "", fmt.Errorf("unowned routing resources for %s were detected; SBP will not change them", provider)
 	}
 	if owned && hasImage {
-		return "Whitelist Bypass " + provider + " 0.3.8 is already prepared for dedicated rooms", nil
+		return "Whitelist Bypass " + provider + " 0.3.8 is already prepared for dedicated device rooms", nil
 	}
 	if len(containers) > 0 {
 		return "", fmt.Errorf("owned routing containers for %s exist without their image; remove the component before reinstalling it", provider)
@@ -2415,7 +2459,7 @@ func installWhitelistBypass(provider string, c config.Config) (string, error) {
 		return "", err
 	}
 	installed = true
-	return "Whitelist Bypass " + provider + " 0.3.8 prepared. A room will be created when the first device is added to a group.", nil
+	return "Whitelist Bypass " + provider + " 0.3.8 prepared. A dedicated room will be created for each device.", nil
 }
 
 func lastNonEmptyLine(path string) string {
@@ -2455,23 +2499,61 @@ func startBypassRoom(provider string, groupID int64, room string, c config.Confi
 	return waitContainerReady(container, 12*time.Second, nil)
 }
 
-func provisionBypassRoom(method string, groupID int64, c config.Config) (credential string, retErr error) {
-	provider := strings.TrimPrefix(method, "bypass-")
+func bypassDeviceDir(provider string, groupID, deviceID int64) (string, error) {
+	if _, ok := bypassSpecs[provider]; !ok || groupID < 1 || deviceID < 1 {
+		return "", errors.New("invalid group, device, or bypass provider")
+	}
+	return filepath.Join("/opt/vpn-panel-managed", "bypass-"+provider, "groups", strconv.FormatInt(groupID, 10), "devices", strconv.FormatInt(deviceID, 10)), nil
+}
+
+func bypassDeviceContainer(spec bypassSpec, groupID, deviceID int64) string {
+	return fmt.Sprintf("%s-g%d-d%d", spec.Container, groupID, deviceID)
+}
+
+func removeEmptyDirectory(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTEMPTY) {
+		return err
+	}
+	return nil
+}
+
+func startBypassDeviceRoom(provider string, groupID, deviceID int64, room string, c config.Config) error {
 	spec, ok := bypassSpecs[provider]
-	if !ok || groupID < 1 {
-		return "", errors.New("invalid group or bypass provider")
+	if !ok || groupID < 1 || deviceID < 1 || strings.TrimSpace(room) == "" {
+		return errors.New("invalid device room")
 	}
 	if _, owned := componentOwnership("bypass-" + provider); !owned {
-		return "", errors.New("install the selected bypass component first")
+		return errors.New("the selected bypass component is not owned by SBP")
 	}
-	if !imageExists(bypassImage(provider)) {
+	container := bypassDeviceContainer(spec, groupID, deviceID)
+	if err := removeContainersStrict(container); err != nil {
+		return err
+	}
+	cookiePath := filepath.Join(c.BypassSecretsDir, spec.CookieProvider, "cookies.json")
+	args := []string{"run", "-d", "--name", container, "--restart", "unless-stopped", "--read-only", "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--memory", "256m", "--pids-limit", "128", "--log-driver", "none", "-v", cookiePath + ":/run/secrets/cookies.json:ro", bypassImage(provider), "--cookies", "/run/secrets/cookies.json", spec.AttachFlag, strings.TrimSpace(room), "--resources", "default"}
+	if _, err := run("docker", args...); err != nil {
+		return err
+	}
+	return waitContainerReady(container, 12*time.Second, nil)
+}
+
+func provisionBypassDeviceRoom(method string, groupID, deviceID int64, c config.Config) (credential string, retErr error) {
+	provider := strings.TrimPrefix(method, "bypass-")
+	spec, ok := bypassSpecs[provider]
+	if !ok || groupID < 1 || deviceID < 1 {
+		return "", errors.New("invalid group, device, or bypass provider")
+	}
+	if _, owned := componentOwnership("bypass-" + provider); !owned || !imageExists(bypassImage(provider)) {
 		return "", errors.New("install the selected bypass component first")
 	}
 	cookiePath := filepath.Join(c.BypassSecretsDir, spec.CookieProvider, "cookies.json")
 	if !fileExists(cookiePath) {
 		return "", errors.New("upload cookies for the selected bypass provider first")
 	}
-	dir := filepath.Join("/opt/vpn-panel-managed", "bypass-"+provider, "groups", strconv.FormatInt(groupID, 10))
+	dir, err := bypassDeviceDir(provider, groupID, deviceID)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
@@ -2483,16 +2565,16 @@ func provisionBypassRoom(method string, groupID int64, c config.Config) (credent
 		if !createdRoom || completed {
 			return
 		}
-		if err := removeContainersStrict(fmt.Sprintf("%s-g%d", spec.Container, groupID), fmt.Sprintf("%s-g%d-init", spec.Container, groupID)); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("rollback dedicated bypass room: %w", err))
+		if err := removeContainersStrict(bypassDeviceContainer(spec, groupID, deviceID), bypassDeviceContainer(spec, groupID, deviceID)+"-init"); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("rollback dedicated bypass device room: %w", err))
 			return
 		}
 		if err := os.RemoveAll(dir); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("remove incomplete bypass room state: %w", err))
+			retErr = errors.Join(retErr, fmt.Errorf("remove incomplete bypass device room: %w", err))
 		}
 	}()
 	if room == "" {
-		initName := fmt.Sprintf("%s-g%d-init", spec.Container, groupID)
+		initName := bypassDeviceContainer(spec, groupID, deviceID) + "-init"
 		if err := removeContainersStrict(initName); err != nil {
 			return "", err
 		}
@@ -2510,14 +2592,44 @@ func provisionBypassRoom(method string, groupID int64, c config.Config) (credent
 			return "", err
 		}
 		if room == "" {
-			return "", fmt.Errorf("the service did not create a dedicated room: %s", strings.TrimSpace(logs))
+			return "", fmt.Errorf("the service did not create a dedicated device room: %s", strings.TrimSpace(logs))
 		}
 	}
-	if err := startBypassRoom(provider, groupID, room, c); err != nil {
+	if err := startBypassDeviceRoom(provider, groupID, deviceID, room, c); err != nil {
 		return "", err
 	}
 	completed = true
 	return room, nil
+}
+
+func removeBypassDeviceRoom(method string, groupID, deviceID int64, preserve bool) error {
+	provider := strings.TrimPrefix(method, "bypass-")
+	spec, ok := bypassSpecs[provider]
+	if !ok || groupID < 1 || deviceID < 1 {
+		return errors.New("invalid group, device, or bypass provider")
+	}
+	if _, owned := componentOwnership("bypass-" + provider); !owned {
+		return errors.New("the selected bypass component is not owned by SBP")
+	}
+	container := bypassDeviceContainer(spec, groupID, deviceID)
+	if err := removeContainersStrict(container, container+"-init"); err != nil {
+		return err
+	}
+	if preserve {
+		return nil
+	}
+	dir, err := bypassDeviceDir(provider, groupID, deviceID)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	devicesDir := filepath.Dir(dir)
+	if err := removeEmptyDirectory(devicesDir); err != nil {
+		return err
+	}
+	return removeEmptyDirectory(filepath.Dir(devicesDir))
 }
 
 func removeBypassRoom(method string, groupID int64, preserve bool) error {
@@ -2535,7 +2647,14 @@ func removeBypassRoom(method string, groupID int64, preserve bool) error {
 	if preserve {
 		return nil
 	}
-	return os.RemoveAll(filepath.Join("/opt/vpn-panel-managed", "bypass-"+provider, "groups", strconv.FormatInt(groupID, 10)))
+	groupDir := filepath.Join("/opt/vpn-panel-managed", "bypass-"+provider, "groups", strconv.FormatInt(groupID, 10))
+	if err := os.Remove(filepath.Join(groupDir, "call.txt")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := removeEmptyDirectory(filepath.Join(groupDir, "devices")); err != nil {
+		return err
+	}
+	return removeEmptyDirectory(groupDir)
 }
 
 func randomUUID() (string, error) {
@@ -2690,19 +2809,102 @@ func provisionAmneziaWG(name string) (string, error) {
 	return fmt.Sprintf("[Interface]\nAddress = 10.8.1.%d/32\nDNS = 1.1.1.1, 1.0.0.1\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", ipn, clientPrivate, shared, serverPublic, psk, endpoint), nil
 }
 
-func provisionCredential(method, name string, groupID int64, c config.Config) (string, error) {
+type renderedProfile struct {
+	Credential        string `json:"credential"`
+	ProfileGeneration int    `json:"profile_generation"`
+	ProtocolVersion   string `json:"protocol_version"`
+}
+
+func desiredProfile(method, credential string) (renderedProfile, error) {
+	profile := renderedProfile{Credential: credential, ProfileGeneration: 1}
+	switch method {
+	case "xray", "xray-xhttp":
+		profile.ProtocolVersion = "26.3.27"
+	case "amneziawg":
+		profile.ProtocolVersion = "2.0"
+	case "bypass-wb", "bypass-telemost", "bypass-dion", "bypass-vk":
+		profile.ProtocolVersion = "0.3.8"
+	default:
+		return renderedProfile{}, errors.New("unsupported method")
+	}
+	return profile, nil
+}
+
+func provisionCredential(method, name string, groupID, deviceID int64, c config.Config) (renderedProfile, error) {
+	var credential string
+	var err error
 	switch method {
 	case "xray":
-		return provisionXray(name)
+		credential, err = provisionXray(name)
 	case "xray-xhttp":
-		return provisionXrayVariant(xhttpXrayVariant, name)
+		credential, err = provisionXrayVariant(xhttpXrayVariant, name)
 	case "amneziawg":
-		return provisionAmneziaWG(name)
+		credential, err = provisionAmneziaWG(name)
 	case "bypass-wb", "bypass-telemost", "bypass-dion", "bypass-vk":
-		return provisionBypassRoom(method, groupID, c)
+		credential, err = provisionBypassDeviceRoom(method, groupID, deviceID, c)
 	default:
-		return "", errors.New("unsupported method")
+		return renderedProfile{}, errors.New("unsupported method")
 	}
+	if err != nil {
+		return renderedProfile{}, err
+	}
+	return desiredProfile(method, credential)
+}
+
+func refreshXrayProfile(variant xrayVariant, name, credential string) (string, error) {
+	match := regexp.MustCompile(`^vless://([^@]+)@`).FindStringSubmatch(strings.TrimSpace(credential))
+	if len(match) != 2 {
+		return "", errors.New("failed to extract the UUID from the VLESS URL")
+	}
+	client, err := variant.loadClientMetadata()
+	if err != nil {
+		return "", err
+	}
+	if client.Server == "" {
+		client.Server = publicServerAddress()
+	}
+	return xrayCredentialLink(variant, match[1], name, client)
+}
+
+func refreshAmneziaWGProfile(credential string) (string, error) {
+	private := configValue(credential, "[Interface]", "PrivateKey")
+	address := configValue(credential, "[Interface]", "Address")
+	psk := configValue(credential, "[Peer]", "PresharedKey")
+	if private == "" || address == "" || psk == "" {
+		return "", errors.New("incomplete AmneziaWG client configuration")
+	}
+	serverPublic, endpoint, shared, err := amneziaWGClientParameters("/opt/vpn-panel-managed/amneziawg")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("[Interface]\nAddress = %s\nDNS = 1.1.1.1, 1.0.0.1\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", address, private, shared, serverPublic, psk, endpoint), nil
+}
+
+func refreshCredential(method, name, credential string, currentGeneration int, groupID, deviceID int64, c config.Config) (renderedProfile, error) {
+	current, err := desiredProfile(method, credential)
+	if err != nil {
+		return renderedProfile{}, err
+	}
+	if currentGeneration > current.ProfileGeneration {
+		return renderedProfile{}, errors.New("this profile was generated by a newer SBP release and will not be downgraded")
+	}
+	switch method {
+	case "xray":
+		current.Credential, err = refreshXrayProfile(stableXrayVariant, name, credential)
+	case "xray-xhttp":
+		current.Credential, err = refreshXrayProfile(xhttpXrayVariant, name, credential)
+	case "amneziawg":
+		current.Credential, err = refreshAmneziaWGProfile(credential)
+	case "bypass-wb", "bypass-telemost", "bypass-dion", "bypass-vk":
+		if currentGeneration >= current.ProfileGeneration && strings.TrimSpace(credential) != "" {
+			return current, nil
+		}
+		current.Credential, err = provisionBypassDeviceRoom(method, groupID, deviceID, c)
+	}
+	if err != nil {
+		return renderedProfile{}, err
+	}
+	return current, nil
 }
 
 func controlXrayCredential(name, credential string, enabled bool) error {
@@ -2857,7 +3059,7 @@ func controlAmneziaWGCredential(name, credential string, enabled bool) error {
 	return updateAmneziaWGConfig(amneziaWGServerPath, amneziaWGContainerConfPath, []byte(out), defaultAmneziaWGRuntimeAPI())
 }
 
-func controlCredential(method, name, credential string, enabled bool) error {
+func controlCredential(method, name, credential string, enabled bool, groupID, deviceID int64, c config.Config) error {
 	switch method {
 	case "xray":
 		return controlXrayCredential(name, credential, enabled)
@@ -2866,7 +3068,10 @@ func controlCredential(method, name, credential string, enabled bool) error {
 	case "amneziawg":
 		return controlAmneziaWGCredential(name, credential, enabled)
 	case "bypass-wb", "bypass-telemost", "bypass-dion", "bypass-vk":
-		return nil
+		if enabled {
+			return startBypassDeviceRoom(strings.TrimPrefix(method, "bypass-"), groupID, deviceID, credential, c)
+		}
+		return removeBypassDeviceRoom(method, groupID, deviceID, true)
 	default:
 		return errors.New("unsupported method")
 	}
@@ -3255,17 +3460,36 @@ func Run(configPath string) error {
 		var in struct {
 			Name, Method string
 			GroupID      int64 `json:"group_id"`
+			DeviceID     int64 `json:"device_id"`
 		}
 		if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in) != nil {
 			writeError(w, http.StatusBadRequest, errors.New("invalid request"))
 			return
 		}
-		credential, err := provisionCredential(in.Method, in.Name, in.GroupID, c)
+		profile, err := provisionCredential(in.Method, in.Name, in.GroupID, in.DeviceID, c)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, map[string]any{"ok": true, "credential": credential})
+		writeJSON(w, map[string]any{"ok": true, "credential": profile.Credential, "profile_generation": profile.ProfileGeneration, "protocol_version": profile.ProtocolVersion})
+	})
+	mux.HandleFunc("PUT /v1/profiles", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Name, Method, Credential string
+			CurrentGeneration        int   `json:"current_generation"`
+			GroupID                  int64 `json:"group_id"`
+			DeviceID                 int64 `json:"device_id"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in) != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid request"))
+			return
+		}
+		profile, err := refreshCredential(in.Method, in.Name, in.Credential, in.CurrentGeneration, in.GroupID, in.DeviceID, c)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "credential": profile.Credential, "profile_generation": profile.ProfileGeneration, "protocol_version": profile.ProtocolVersion})
 	})
 	mux.HandleFunc("DELETE /v1/bypass/rooms/{groupID}/{provider}", func(w http.ResponseWriter, r *http.Request) {
 		groupID, err := strconv.ParseInt(r.PathValue("groupID"), 10, 64)
@@ -3279,16 +3503,48 @@ func Run(configPath string) error {
 		}
 		writeJSON(w, map[string]any{"ok": true})
 	})
+	mux.HandleFunc("PUT /v1/bypass/rooms/{groupID}/{provider}", func(w http.ResponseWriter, r *http.Request) {
+		groupID, err := strconv.ParseInt(r.PathValue("groupID"), 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid group"))
+			return
+		}
+		var in struct{ Credential string }
+		if json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in) != nil || strings.TrimSpace(in.Credential) == "" {
+			writeError(w, http.StatusBadRequest, errors.New("invalid shared room"))
+			return
+		}
+		if err := startBypassRoom(r.PathValue("provider"), groupID, in.Credential, c); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("DELETE /v1/bypass/rooms/{groupID}/{provider}/{deviceID}", func(w http.ResponseWriter, r *http.Request) {
+		groupID, groupErr := strconv.ParseInt(r.PathValue("groupID"), 10, 64)
+		deviceID, deviceErr := strconv.ParseInt(r.PathValue("deviceID"), 10, 64)
+		if groupErr != nil || deviceErr != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid group or device"))
+			return
+		}
+		if err := removeBypassDeviceRoom("bypass-"+r.PathValue("provider"), groupID, deviceID, r.URL.Query().Get("preserve") == "true"); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("PUT /v1/credentials", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Name, Method, Credential string
 			Enabled                  bool
+			GroupID                  int64 `json:"group_id"`
+			DeviceID                 int64 `json:"device_id"`
 		}
 		if json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in) != nil {
 			writeError(w, http.StatusBadRequest, errors.New("invalid request"))
 			return
 		}
-		if err := controlCredential(in.Method, in.Name, in.Credential, in.Enabled); err != nil {
+		if err := controlCredential(in.Method, in.Name, in.Credential, in.Enabled, in.GroupID, in.DeviceID, c); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -3366,7 +3622,7 @@ func Run(configPath string) error {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, map[string]any{"ok": true, "provider": provider, "message": "cookies cleared; saved group rooms were preserved"})
+		writeJSON(w, map[string]any{"ok": true, "provider": provider, "message": "cookies cleared; saved device rooms were preserved"})
 	})
 	s := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	fmt.Printf("Simple Bridge Panel agent listening on %s\n", c.AgentSocket)

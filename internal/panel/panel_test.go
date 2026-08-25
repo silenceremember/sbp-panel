@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -642,13 +643,353 @@ func TestProcessTrafficMetricsKeepsXrayVariantsSeparate(t *testing.T) {
 func TestNameBypassRoomsUsesGroupNamesAndKeepsOrphansVisible(t *testing.T) {
 	rooms := []bypassRoomSummary{
 		{GroupID: 99, Provider: "vk", Code: "orphan"},
-		{GroupID: 2, Provider: "wbstream", Code: "second"},
+		{GroupID: 2, DeviceID: 22, Provider: "wbstream", Code: "second"},
 		{GroupID: 1, Provider: "wbstream", Code: "first"},
 	}
 	groups := []store.Group{{ID: 1, Name: "Alpha"}, {ID: 2, Name: "Beta"}}
-	got := nameBypassRooms(rooms, groups)
+	got := nameBypassRooms(rooms, groups, []store.Device{{ID: 22, Name: "Phone"}})
 	if len(got) != 3 || got[0].GroupName != "Alpha" || got[1].GroupName != "Beta" || got[2].GroupName != "Unknown group #99" {
 		t.Fatalf("unexpected rooms: %#v", got)
+	}
+	if got[1].DeviceName != "Phone" {
+		t.Fatalf("device room was not named: %#v", got[1])
+	}
+}
+
+func TestProfileUpdateRouteRequiresAdminAndCSRF(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.Authenticate("admin", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrfToken, err := db.CreateSession(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID, err := db.CreateDevice(groupID, "Laptop", "xray", "vless://old@example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.Method != http.MethodPut || request.URL.Path != "/v1/profiles" {
+			t.Fatalf("agent request = %s %s", request.Method, request.URL.Path)
+		}
+		body := `{"ok":true,"credential":"vless://updated@example.com:443","profile_generation":1,"protocol_version":"26.3.27"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	path := fmt.Sprintf("/api/devices/%d/profile", deviceID)
+
+	request := httptest.NewRequest(http.MethodPost, path, nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || calls != 0 {
+		t.Fatalf("unauthenticated update status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("CSRF-free update status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("authenticated update status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+	}
+}
+
+func TestProfileUpdateConvertsSharedBypassProfilesTogether(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, err := db.CreateDevice(groupID, "First", "bypass-wb", "wbstream://shared-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := db.CreateDevice(groupID, "Second", "bypass-wb", "wbstream://shared-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshed []int64
+	var removed []string
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"ok":true}`
+		if request.Method == http.MethodPut && request.URL.Path == "/v1/profiles" {
+			var payload struct {
+				DeviceID int64 `json:"device_id"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			refreshed = append(refreshed, payload.DeviceID)
+			body = fmt.Sprintf(`{"ok":true,"credential":"wbstream://device-%d","profile_generation":1,"protocol_version":"0.3.8"}`, payload.DeviceID)
+		}
+		if request.Method == http.MethodDelete {
+			removed = append(removed, request.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/devices/%d/profile", firstID), nil)
+	request.SetPathValue("id", fmt.Sprint(firstID))
+	response := httptest.NewRecorder()
+
+	s.updateDeviceProfile(response, request)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"updated_profiles":2`) {
+		t.Fatalf("unexpected refresh response: status=%d body=%q", response.Code, response.Body.String())
+	}
+	if len(refreshed) != 2 {
+		t.Fatalf("refreshed device IDs = %#v", refreshed)
+	}
+	first, err := db.Device(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.Device(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != "First" || first.Credential == second.Credential || first.ProfileGeneration != 1 || second.ProfileGeneration != 1 {
+		t.Fatalf("profiles were not independently published: first=%#v second=%#v", first, second)
+	}
+	legacyPath := fmt.Sprintf("/v1/bypass/rooms/%d/wb", groupID)
+	if len(removed) != 1 || removed[0] != legacyPath {
+		t.Fatalf("obsolete shared room cleanup = %#v, want %q", removed, legacyPath)
+	}
+}
+
+func TestSharedBypassRefreshFailureKeepsStoredProfiles(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, err := db.CreateDevice(groupID, "First", "bypass-wb", "wbstream://shared-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := db.CreateDevice(groupID, "Second", "bypass-wb", "wbstream://shared-room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prepared, cleaned []int64
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		body := `{"ok":true}`
+		if request.Method == http.MethodPut && request.URL.Path == "/v1/profiles" {
+			var payload struct {
+				DeviceID int64 `json:"device_id"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			if len(prepared) == 1 {
+				status = http.StatusBadRequest
+				body = `{"ok":false,"error":"provider rejected the second room"}`
+			} else {
+				prepared = append(prepared, payload.DeviceID)
+				body = fmt.Sprintf(`{"ok":true,"credential":"wbstream://device-%d","profile_generation":1,"protocol_version":"0.3.8"}`, payload.DeviceID)
+			}
+		}
+		if request.Method == http.MethodDelete {
+			parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
+			if len(parts) == 6 {
+				id, _ := strconv.ParseInt(parts[5], 10, 64)
+				cleaned = append(cleaned, id)
+			}
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/devices/%d/profile", firstID), nil)
+	request.SetPathValue("id", fmt.Sprint(firstID))
+	response := httptest.NewRecorder()
+
+	s.updateDeviceProfile(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected failure status=%d body=%q", response.Code, response.Body.String())
+	}
+	first, _ := db.Device(firstID)
+	second, _ := db.Device(secondID)
+	if first.Name != "First" || first.Credential != "wbstream://shared-room" || second.Credential != "wbstream://shared-room" || first.ProfileGeneration != 0 || second.ProfileGeneration != 0 {
+		t.Fatalf("failed conversion changed stored profiles: first=%#v second=%#v", first, second)
+	}
+	if len(prepared) != 1 || len(cleaned) != 1 || prepared[0] != cleaned[0] {
+		t.Fatalf("prepared replacement was not compensated: prepared=%#v cleaned=%#v", prepared, cleaned)
+	}
+}
+
+func TestEditDeviceOnlyChangesName(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceID, err := db.CreateDevice(groupID, "Phone", "xray", "vless://unchanged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &server{db: db, agent: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("Edit must not call the profile renderer")
+		return nil, errors.New("unexpected agent call")
+	})}}
+	request := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/devices/%d", deviceID), strings.NewReader(`{"Name":"Tablet"}`))
+	request.SetPathValue("id", fmt.Sprint(deviceID))
+	response := httptest.NewRecorder()
+
+	s.updateDevice(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected edit response: status=%d body=%q", response.Code, response.Body.String())
+	}
+	device, err := db.Device(deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.Name != "Tablet" || device.Credential != "vless://unchanged" || device.ProfileGeneration != 0 {
+		t.Fatalf("Edit changed more than the name: %#v", device)
+	}
+}
+
+func TestAmneziaWGProfileUpdatePublishesAllProfilesTogether(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	firstGroup, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondGroup, err := db.CreateGroupWithExpiration("Work", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, err := db.CreateDevice(firstGroup, "Phone", "amneziawg", "old-phone", "native")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := db.CreateDevice(secondGroup, "Laptop", "amneziawg", "old-laptop", "native")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshed []int64
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			DeviceID int64 `json:"device_id"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		refreshed = append(refreshed, payload.DeviceID)
+		body := fmt.Sprintf(`{"ok":true,"credential":"updated-%d","profile_generation":1,"protocol_version":"2.0"}`, payload.DeviceID)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/devices/%d/profile", firstID), nil)
+	request.SetPathValue("id", fmt.Sprint(firstID))
+	response := httptest.NewRecorder()
+
+	s.updateDeviceProfile(response, request)
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"updated_profiles":2`) || !strings.Contains(response.Body.String(), `"update_scope":"method"`) {
+		t.Fatalf("unexpected coordinated update response: status=%d body=%q", response.Code, response.Body.String())
+	}
+	if len(refreshed) != 2 {
+		t.Fatalf("refreshed device IDs = %#v", refreshed)
+	}
+	first, _ := db.Device(firstID)
+	second, _ := db.Device(secondID)
+	if first.Credential != fmt.Sprintf("updated-%d", firstID) || second.Credential != fmt.Sprintf("updated-%d", secondID) || first.ProfileGeneration != 1 || second.ProfileGeneration != 1 {
+		t.Fatalf("AmneziaWG profiles were not published together: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestAmneziaWGProfileUpdateFailurePublishesNothing(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, err := db.CreateDevice(groupID, "Phone", "amneziawg", "old-phone", "native")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := db.CreateDevice(groupID, "Laptop", "amneziawg", "old-laptop", "native")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			DeviceID int64 `json:"device_id"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		status := http.StatusOK
+		body := fmt.Sprintf(`{"ok":true,"credential":"updated-%d","profile_generation":1,"protocol_version":"2.0"}`, payload.DeviceID)
+		if payload.DeviceID == secondID {
+			status = http.StatusBadRequest
+			body = `{"ok":false,"error":"profile is incomplete"}`
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/devices/%d/profile", firstID), nil)
+	request.SetPathValue("id", fmt.Sprint(firstID))
+	response := httptest.NewRecorder()
+
+	s.updateDeviceProfile(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected failed update response: status=%d body=%q", response.Code, response.Body.String())
+	}
+	first, _ := db.Device(firstID)
+	second, _ := db.Device(secondID)
+	if first.Credential != "old-phone" || second.Credential != "old-laptop" || first.ProfileGeneration != 0 || second.ProfileGeneration != 0 {
+		t.Fatalf("failed coordinated update changed stored profiles: first=%#v second=%#v", first, second)
 	}
 }
 
@@ -793,7 +1134,7 @@ func TestCreateDeviceResponseStillIncludesCredential(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"credential":"` + credential + `"}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"credential":"` + credential + `","profile_generation":1,"protocol_version":"26.3.27"}`)),
 		}, nil
 	})}
 	s := &server{db: db, agent: agent}
@@ -828,7 +1169,7 @@ func TestRepeatedCreateDeviceReturnsConflict(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"credential":"` + credential + `"}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"credential":"` + credential + `","profile_generation":1,"protocol_version":"26.3.27"}`)),
 		}, nil
 	})}
 	s := &server{db: db, agent: agent}

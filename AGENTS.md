@@ -108,12 +108,12 @@ It must be usable by a contributor who has only the repository and the plan.
 - Distinct protocol variants must use distinct component IDs, container names,
   managed directories, public ports, runtime APIs, and traffic namespaces.
   Installing, updating, or removing one variant must not mutate another.
-- Routing integrations use at most one room per group and provider. A room is a
-  shared group resource, not a per-device resource.
+- Routing integrations use one independently managed room per device. Room
+  traffic is aggregated by group and provider for the dashboard.
 - Deleting a group must clean its devices, credentials, traffic rows, and saved
   routing rooms, while reporting any external cleanup that could not be proven.
 - Traffic data covers only the current UTC month. Xray and AmneziaWG can be
-  measured per device; routing traffic is measured per group/provider room.
+  measured per device; routing room traffic is aggregated per group/provider.
 - Traffic counters are operational estimates, never billing-grade claims.
 - Persistent managed containers use Docker logging disabled unless a bounded,
   documented diagnostic path requires otherwise.

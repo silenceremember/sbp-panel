@@ -179,6 +179,8 @@ func TestRemoveBypassContainersUsesExactManagedNames(t *testing.T) {
 			return strings.Join([]string{
 				"vpn-panel-bypass-wb-g1",
 				"vpn-panel-bypass-wb-g27-init",
+				"vpn-panel-bypass-wb-g1-d8",
+				"vpn-panel-bypass-wb-g1-d9-init",
 				"vpn-panel-bypass-wb-g0",
 				"vpn-panel-bypass-wb-g1-copy",
 				"vpn-panel-bypass-wb-external",
@@ -194,7 +196,7 @@ func TestRemoveBypassContainersUsesExactManagedNames(t *testing.T) {
 	if err := removeBypassContainersStrict("wb"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"vpn-panel-bypass-wb-g1", "vpn-panel-bypass-wb-g27-init"}
+	want := []string{"vpn-panel-bypass-wb-g1", "vpn-panel-bypass-wb-g27-init", "vpn-panel-bypass-wb-g1-d8", "vpn-panel-bypass-wb-g1-d9-init"}
 	if !reflect.DeepEqual(removed, want) {
 		t.Fatalf("removed containers = %#v, want %#v", removed, want)
 	}
