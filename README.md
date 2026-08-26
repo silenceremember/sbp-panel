@@ -189,9 +189,11 @@ Versions use `X.Y.Z`:
 | `Y` | A backwards-compatible feature release |
 | `Z` | A compatible fix or small polish update |
 
+See the concise release history in [CHANGELOG.md](CHANGELOG.md).
+
 **Pre-release builds are strongly discouraged for normal use.** They remain in the release history only for developer testing, investigation, and convenient downloads, and may contain bugs or incomplete work.
 
-The `1.4.1` prerelease observes the new AmneziaWG 3.1 and AmneziaVPN 5.0.1.5 combination. Its default preset enables header protection, keeps narrow non-overlapping header ranges, leaves random trailers and cookie suppression disabled, and does not enable optional timing or content-padding experiments. Upstream client regressions are still being tracked in [issue #3043](https://github.com/amnezia-vpn/amnezia-client/issues/3043) and [issue #3048](https://github.com/amnezia-vpn/amnezia-client/issues/3048).
+The `1.4.x` prereleases observe the new AmneziaWG 3.1 and AmneziaVPN 5.0.1.5 combination. Their default preset enables header protection, keeps narrow non-overlapping header ranges, leaves random trailers and cookie suppression disabled, and does not enable optional timing or content-padding experiments. Upstream client regressions are still being tracked in [issue #3043](https://github.com/amnezia-vpn/amnezia-client/issues/3043) and [issue #3048](https://github.com/amnezia-vpn/amnezia-client/issues/3048).
 
 ## Plans
 

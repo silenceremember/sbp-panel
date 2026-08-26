@@ -20,6 +20,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Verify release notes
+        shell: bash
+        run: |
+          version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' internal/buildinfo/buildinfo.go)"
+          bash deploy/changelog.sh "${version}" >/dev/null
       - name: Format
         run: test -z "$(gofmt -l .)"
       - name: Test
@@ -119,6 +124,7 @@ jobs:
           fi
           bundle="dist/sbp-panel-${version}-linux-amd64"
           mkdir -p "${bundle}"
+          bash deploy/changelog.sh "${version}" > dist/release-notes.md
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "${bundle}/sbp-panel-linux-amd64" ./cmd/sbp-panel
           cp deploy/bootstrap.sh "${bundle}/bootstrap.sh"
           cp deploy/uninstall.sh "${bundle}/uninstall.sh"
@@ -153,5 +159,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             "dist/sbp-panel-${GITHUB_REF_NAME#v}-linux-amd64.zip" \
             "dist/sbp-panel-update.json" \
-            --verify-tag --generate-notes --title "SBP Panel ${GITHUB_REF_NAME}" \
+            --verify-tag --notes-file "dist/release-notes.md" --title "SBP Panel ${GITHUB_REF_NAME}" \
             "${release_flags[@]}"

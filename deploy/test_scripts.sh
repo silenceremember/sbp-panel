@@ -8,6 +8,8 @@ UNINSTALL="${SCRIPT_DIR}/uninstall.sh"
 INSTALL="${SCRIPT_DIR}/../install.sh"
 RELEASE="${SCRIPT_DIR}/../.github/workflows/release.yml"
 AGENT="${SCRIPT_DIR}/../internal/agent/agent.go"
+CHANGELOG_SCRIPT="${SCRIPT_DIR}/changelog.sh"
+CHANGELOG="${SCRIPT_DIR}/../CHANGELOG.md"
 
 fail() {
   echo "deploy script assertion failed: $*" >&2
@@ -23,6 +25,7 @@ contains() {
 bash -n "${BOOTSTRAP}"
 bash -n "${UNINSTALL}"
 bash -n "${INSTALL}"
+bash -n "${CHANGELOG_SCRIPT}"
 
 contains "${INSTALL}" 'sbp-panel-update.json'
 contains "${INSTALL}" 'sha256sum "${archive}"'
@@ -58,9 +61,80 @@ contains "${RELEASE}" '"size":%s'
 contains "${RELEASE}" 'Prerelease[[:space:]]*='
 contains "${RELEASE}" 'release_flags=(--prerelease --latest=false)'
 contains "${RELEASE}" 'release_flags=(--latest)'
+contains "${RELEASE}" 'bash deploy/changelog.sh "${version}" > dist/release-notes.md'
+contains "${RELEASE}" '--notes-file "dist/release-notes.md"'
+if grep -Fq -- '--generate-notes' "${RELEASE}"; then
+  fail "release notes must come from CHANGELOG.md"
+fi
 if grep -Fq 'git archive' "${RELEASE}"; then
   fail "release bundle must not archive the repository"
 fi
+
+current_version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${SCRIPT_DIR}/../internal/buildinfo/buildinfo.go")"
+current_notes="$(bash "${CHANGELOG_SCRIPT}" "${current_version}" "${CHANGELOG}")"
+printf '%s\n' "${current_notes}" | grep -Eq '^- .+' || fail "current release notes were not extracted"
+mapfile -t released_versions < <(sed -n 's/^## \[\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\] - [0-9][0-9]*-[0-9][0-9]*-[0-9][0-9]*$/\1/p' "${CHANGELOG}")
+[ "${#released_versions[@]}" -gt 0 ] || fail "changelog has no release entries"
+[ "${released_versions[-1]}" = 1.0.0 ] || fail "changelog must cover every release starting with 1.0.0"
+heading_count="$(grep -Ec '^## \[' "${CHANGELOG}")"
+[ "${heading_count}" -eq "${#released_versions[@]}" ] || fail "changelog contains a malformed release heading"
+actual_order="$(printf '%s\n' "${released_versions[@]}")"
+sorted_order="$(printf '%s\n' "${released_versions[@]}" | sort -Vr)"
+[ "${actual_order}" = "${sorted_order}" ] || fail "changelog releases are not in descending version order"
+for released_version in "${released_versions[@]}"; do
+  bash "${CHANGELOG_SCRIPT}" "${released_version}" "${CHANGELOG}" >/dev/null || \
+    fail "release ${released_version} is missing changelog notes"
+done
+
+changelog_test_root="$(mktemp -d)"
+trap 'rm -rf "${changelog_test_root}"' EXIT
+cat > "${changelog_test_root}/valid.md" <<'EOF'
+# Changelog
+
+## [1.2.3] - 2026-08-26
+
+- First change.
+- Second change.
+
+## [1.2.2] - 2026-08-25
+
+- Older change.
+EOF
+expected_notes=$'- First change.\n- Second change.'
+actual_notes="$(bash "${CHANGELOG_SCRIPT}" 1.2.3 "${changelog_test_root}/valid.md")"
+[ "${actual_notes}" = "${expected_notes}" ] || fail "changelog extraction returned unexpected notes"
+
+for invalid_case in missing duplicate empty malformed; do
+  case "${invalid_case}" in
+    missing)
+      cp "${changelog_test_root}/valid.md" "${changelog_test_root}/${invalid_case}.md"
+      version=9.9.9
+      ;;
+    duplicate)
+      cp "${changelog_test_root}/valid.md" "${changelog_test_root}/${invalid_case}.md"
+      cat >> "${changelog_test_root}/${invalid_case}.md" <<'EOF'
+
+## [1.2.3] - 2026-08-24
+
+- Duplicate change.
+EOF
+      version=1.2.3
+      ;;
+    empty)
+      printf '# Changelog\n\n## [1.2.3] - 2026-08-26\n' > "${changelog_test_root}/${invalid_case}.md"
+      version=1.2.3
+      ;;
+    malformed)
+      printf '# Changelog\n\n## [1.2.3]\n\n- Change.\n' > "${changelog_test_root}/${invalid_case}.md"
+      version=1.2.3
+      ;;
+  esac
+  if bash "${CHANGELOG_SCRIPT}" "${version}" "${changelog_test_root}/${invalid_case}.md" >/dev/null 2>&1; then
+    fail "changelog ${invalid_case} case was accepted"
+  fi
+done
+rm -rf "${changelog_test_root}"
+trap - EXIT
 if grep -Eq 'apt-get clean|rm -rf /var/lib/apt/lists' "${INSTALL}" "${BOOTSTRAP}" || grep -Fq 'run("apt-get", "clean")' "${AGENT}"; then
   fail "SBP must not clear shared apt caches"
 fi

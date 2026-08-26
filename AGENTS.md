@@ -36,6 +36,7 @@ upgrade payloads, or cleanup paths.
 - `install.sh`: public one-line installer.
 - `.github/workflows/release.yml`: CI and release bundle pipeline.
 - `README.md`: concise user-facing overview and commands.
+- `CHANGELOG.md`: concise per-version notes and GitHub Release body source.
 - `PLANS.md`: format and live record for complex execution plans.
 
 ## Sources of truth
@@ -191,6 +192,8 @@ remaining risk.
 - The version and GitHub release category sources are `Version` and
   `Prerelease` in `internal/buildinfo/buildinfo.go`.
 - Tags use `vX.Y.Z` and must match the numeric source version exactly.
+- Every source version must have exactly one non-empty `CHANGELOG.md` section;
+  the release workflow publishes that section as the GitHub Release body.
 - `X` is a compatibility-breaking release, `Y` is a feature release, and `Z`
   is a compatible fix or polish release.
 - `Prerelease = true` publishes the numeric tag as a GitHub prerelease and must
