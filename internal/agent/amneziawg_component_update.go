@@ -133,7 +133,7 @@ func generateAmneziaWG3Deployment(image string, devices []amneziaWGComponentDevi
 		if device.Active {
 			server += fmt.Sprintf("\n# %s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s\n", device.Name, clientPublic, psk, address)
 		}
-		credential := fmt.Sprintf("[Interface]\nAddress = %s\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1376\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", address, clientPrivate, shared, serverPublic, psk, endpoint)
+		credential := fmt.Sprintf("[Interface]\nAddress = %s\nDNS = 1.1.1.1, 1.0.0.1\nMTU = %d\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", address, amneziaWGClientMTU, clientPrivate, shared, serverPublic, psk, endpoint)
 		profiles = append(profiles, amneziaWGComponentProfile{DeviceID: device.DeviceID, Credential: credential, ProfileGeneration: 2, ProtocolVersion: "3.1"})
 	}
 	metadata, err := json.MarshalIndent(map[string]string{

@@ -1799,6 +1799,7 @@ const xrayRealityTarget = xrayRealityServerName + ":443"
 const awgVersion = "3.1.20260814"
 const awgBaseImage = "amneziavpn/amneziawg-go:" + awgVersion + "@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a"
 const awgPort = 48692
+const amneziaWGClientMTU = 1280
 const amneziaWGDockerfile = "FROM " + awgBaseImage + "\nRUN apk add --no-cache bash dumb-init iptables\nCOPY start.sh /opt/amnezia/start.sh\nRUN chmod 755 /opt/amnezia/start.sh\nENTRYPOINT [\"dumb-init\",\"/opt/amnezia/start.sh\"]\n"
 const amneziaWGStartScript = `#!/bin/bash
 set -e
@@ -2828,7 +2829,7 @@ func provisionAmneziaWG(name string) (string, error) {
 	if err := updateAmneziaWGConfig(amneziaWGServerPath, amneziaWGContainerConfPath, append(b, []byte(peer)...), defaultAmneziaWGRuntimeAPI()); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("[Interface]\nAddress = 10.8.1.%d/32\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1376\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", ipn, clientPrivate, shared, serverPublic, psk, endpoint), nil
+	return fmt.Sprintf("[Interface]\nAddress = 10.8.1.%d/32\nDNS = 1.1.1.1, 1.0.0.1\nMTU = %d\nPrivateKey = %s\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = 25\n", ipn, amneziaWGClientMTU, clientPrivate, shared, serverPublic, psk, endpoint), nil
 }
 
 type renderedProfile struct {

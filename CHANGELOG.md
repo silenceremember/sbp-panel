@@ -3,6 +3,10 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.4.3] - 2026-08-29
+
+- Changed newly issued AmneziaWG client profiles to use the conservative MTU 1280 default for more reliable Windows and mobile connectivity.
+
 ## [1.4.2] - 2026-08-25
 
 - Added per-device traffic attribution for Whitelist Bypass rooms and group totals.

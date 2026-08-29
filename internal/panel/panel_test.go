@@ -798,7 +798,7 @@ func TestComponentSettingsRoutesRequireAuthenticationAdminAndCSRF(t *testing.T) 
 }
 
 func TestAmneziaAppCredentialRoundTrip(t *testing.T) {
-	native := "[Interface]\nPrivateKey = secret\n[Peer]\nEndpoint = 192.0.2.1:443\n"
+	native := "[Interface]\nMTU = 1280\nPrivateKey = secret\n[Peer]\nEndpoint = 192.0.2.1:443\n"
 	got := displayCredential(store.Device{Method: "amneziawg", Format: "app", Credential: native})
 	if !strings.HasPrefix(got, "vpn://") {
 		t.Fatalf("missing vpn scheme: %q", got)
