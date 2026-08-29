@@ -121,6 +121,31 @@ func xrayCredentialLink(variant xrayVariant, id, name string, metadata xrayClien
 	return base + "#" + label, nil
 }
 
+func xrayCredentialID(credential string) (string, error) {
+	value := strings.TrimSpace(credential)
+	if !strings.HasPrefix(value, "vless://") {
+		return "", errors.New("failed to extract the UUID from the VLESS URL")
+	}
+	id, _, found := strings.Cut(strings.TrimPrefix(value, "vless://"), "@")
+	id = strings.TrimSpace(id)
+	if !found || id == "" || strings.ContainsAny(id, "/?# \t\r\n") {
+		return "", errors.New("failed to extract the UUID from the VLESS URL")
+	}
+	return id, nil
+}
+
+func renderExistingXrayCredential(variant xrayVariant, name, credential string) (string, error) {
+	id, err := xrayCredentialID(credential)
+	if err != nil {
+		return "", err
+	}
+	metadata, err := variant.loadClientMetadata()
+	if err != nil {
+		return "", err
+	}
+	return xrayCredentialLink(variant, id, name, metadata)
+}
+
 func xrayContainerArgsFor(variant xrayVariant) []string {
 	configPath := path.Join(variant.Dir, "config.json")
 	return []string{

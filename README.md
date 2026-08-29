@@ -112,7 +112,7 @@ https://YOUR_SERVER_IP:9443
 
 Profiles use the readable name `SBP · Group name · Device name`. Each profile also records its protocol version. **Edit** changes the device name. Recreate a device when it needs a newly issued profile.
 
-Routing integrations create one independent room for each new device. Historical shared-room devices are not migrated automatically; remove and recreate them when independent rooms are required.
+Routing integrations create one independent room for each device. If saved rooms differ from that current layout, the routing component exposes one global **Update** that reconciles every affected device; changed links must be copied again.
 
 | Profile type | Suggested client |
 |---|---|
@@ -134,9 +134,10 @@ Routing integrations create one independent room for each new device. Historical
 | Area | Behavior |
 |---|---|
 | Device changes | Edit changes the name; recreate a device to issue a new profile; runtime membership changes live without restarting shared containers |
-| Component profile revisions | **Update** appears when stored profiles differ from the current component version or generated-configuration revision; one component action updates every matching profile |
+| Component profile revisions | **Update** appears when stored profiles or routing rooms differ from the current component revision and layout; one component action reconciles every affected profile |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
 | Component lifecycle | An active install, update, or removal is restored after a browser reload and conflicting actions remain disabled until it finishes |
+| Xray profile update | Global **Update** rebuilds every matching link from the component's current managed server settings and publishes the set atomically; UUIDs, runtime users, and the running container do not change |
 | AmneziaWG component update | A protocol upgrade replaces the complete deployment and rotates all keys; a client-configuration revision refreshes every stored profile atomically without changing server keys, peers, or the container; both require users to import the newly issued profiles |
 | Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |
 | Docker settings | Install, repair, or remove Docker Compose v2; verified external Ubuntu packages can be removed without adoption, while unknown CLI plugins remain untouched; includes a read-only container list |
@@ -144,7 +145,7 @@ Routing integrations create one independent room for each new device. Historical
 | AmneziaWG settings | Server-side AWG obfuscation parameters are available before and after installation; profile-affecting changes are refused while peers exist |
 | Routing settings | Each routing component keeps its own cookie JSON upload, clear action, and saved rooms under **Components > Settings** |
 | Expiration | Expired groups are reconciled with runtime credentials and routing access |
-| Routing | One room and bounded managed container per device, with per-device traffic estimates rolled up into the group total |
+| Routing | One room and bounded managed container per device, with a forward-retryable global Update for layout drift and per-device traffic estimates rolled up into the group total |
 | Traffic | Current UTC month only; operational estimates, not billing records |
 | Persistent state | No historical traffic archive, automatic backups, editable source tree, or build toolchain |
 | Logs | Persistent managed Docker logging is disabled; SBP services do not write persistent application logs |

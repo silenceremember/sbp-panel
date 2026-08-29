@@ -3,6 +3,11 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.5.0] - 2026-08-29
+
+- Replaced metadata-only Xray updates with an atomic global refresh of every TCP or XHTTP link while preserving UUIDs and the running containers.
+- Added a forward-retryable global Update that reconciles Whitelist Bypass rooms to the current one-room-per-device layout for traffic attribution.
+
 ## [1.4.4] - 2026-08-29
 
 - Added global profile-revision detection so component Update appears after generated configuration changes.

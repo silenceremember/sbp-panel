@@ -415,10 +415,11 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"const settingsAction = buttonHTML('Settings'",
 		"data-component-update",
 		"/api/components/${component.id}/update",
-		"runComponentProfileVersionUpdate(component, event.currentTarget)",
 		"runComponentProfileRefresh(component, event.currentTarget)",
 		"/api/components/${component.id}/profiles",
-		"/api/components/${component.id}/profile-version",
+		"UUIDs and the running container will not change",
+		"component.update_kind === 'routing'",
+		"one-room-per-device layout",
 		"/api/components/${component.id}/settings",
 	} {
 		if !strings.Contains(javascript, expected) {
@@ -430,6 +431,9 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 	}
 	if strings.Contains(javascript, "externalRemovalDialog") {
 		t.Fatal("external removal still opens a dedicated dialog")
+	}
+	if strings.Contains(javascript, "profile-version") || strings.Contains(javascript, "update_kind === 'metadata'") {
+		t.Fatal("metadata-only profile Update is still exposed")
 	}
 	if strings.Contains(javascript, "data-update") || strings.Contains(javascript, "/profile`") {
 		t.Fatal("device-level profile Update is still exposed")
@@ -462,7 +466,7 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 	}
 }
 
-func TestDiscoveryOffersGlobalVersionUpdateForMismatchedProfiles(t *testing.T) {
+func TestDiscoveryOffersGlobalProfileRefreshForMismatchedXrayProfiles(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -495,7 +499,7 @@ func TestDiscoveryOffersGlobalVersionUpdateForMismatchedProfiles(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "metadata" || result.Components[0].ProfilesToUpdate != 1 {
+	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "profile" || result.Components[0].ProfilesToUpdate != 1 {
 		t.Fatalf("unexpected component update state: %#v", result.Components)
 	}
 }
@@ -570,6 +574,143 @@ func TestDiscoveryOffersAmneziaWGProfileRefreshForOlderGeneration(t *testing.T) 
 	}
 	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "profile" || result.Components[0].ProfilesToUpdate != 1 {
 		t.Fatalf("unexpected AmneziaWG profile update state: %#v", result.Components)
+	}
+}
+
+func TestDiscoveryOffersRoutingUpdateForSharedRoomLayout(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	deviceID, _ := db.CreateDevice(groupID, "Phone", "bypass-wb", "wbstream://shared-room", "")
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"components":[{"id":"bypass-wb","installed":true,"external":false,"profile_version":"0.3.8","profile_generation":1}]}`
+		if request.URL.Path == "/v1/bypass/rooms" {
+			body = fmt.Sprintf(`{"rooms":[{"group_id":%d,"provider":"wbstream","code":"shared-room"}]}`, groupID)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	s.discovery(response, httptest.NewRequest(http.MethodGet, "/api/discovery", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	var result struct {
+		Components []struct {
+			CanUpdate        bool   `json:"can_update"`
+			UpdateKind       string `json:"update_kind"`
+			ProfilesToUpdate int    `json:"profiles_to_update"`
+		} `json:"components"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "routing" || result.Components[0].ProfilesToUpdate != 2 {
+		t.Fatalf("unexpected routing update state for device %d: %#v", deviceID, result.Components)
+	}
+}
+
+func TestRoutingRoomDriftRejectsMismatchedAndOrphanedRoomsWithoutCrossingProviders(t *testing.T) {
+	spec := routingComponentSpecs["bypass-wb"]
+	devices := []store.Device{{ID: 7, GroupID: 3, Method: "bypass-wb", Credential: "wbstream://current"}}
+	if drift := routingRoomDrift(spec, devices, []bypassRoomSummary{{GroupID: 3, DeviceID: 7, Provider: "wbstream", Code: "current"}}); drift != 0 {
+		t.Fatalf("current layout drift=%d", drift)
+	}
+	rooms := []bypassRoomSummary{
+		{GroupID: 3, DeviceID: 7, Provider: "wbstream", Code: "different"},
+		{GroupID: 3, DeviceID: 99, Provider: "wbstream", Code: "orphan"},
+		{GroupID: 3, DeviceID: 7, Provider: "vk", Code: "unrelated"},
+	}
+	if drift := routingRoomDrift(spec, devices, rooms); drift != 3 {
+		t.Fatalf("mismatched layout drift=%d, want 3", drift)
+	}
+}
+
+func TestRoutingUpdateRetriesForwardWithoutRollingBackCompletedProfiles(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	firstID, _ := db.CreateDevice(groupID, "Phone", "bypass-wb", "wbstream://shared-room", "")
+	secondID, _ := db.CreateDevice(groupID, "Tablet", "bypass-wb", "wbstream://shared-room", "")
+	shared := true
+	dedicated := map[int64]string{}
+	failSecond := true
+	provisionCalls := map[int64]int{}
+	wrongProviderDeletes := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		body := `{"components":[{"id":"bypass-wb","installed":true,"external":false,"profile_version":"0.3.8","profile_generation":1}]}`
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/bypass/rooms":
+			rooms := make([]string, 0)
+			if shared {
+				rooms = append(rooms, fmt.Sprintf(`{"group_id":%d,"provider":"wbstream","code":"shared-room"}`, groupID))
+			}
+			for id, code := range dedicated {
+				rooms = append(rooms, fmt.Sprintf(`{"group_id":%d,"device_id":%d,"provider":"wbstream","code":%q}`, groupID, id, code))
+			}
+			rooms = append(rooms, `{"group_id":99,"device_id":99,"provider":"vk","code":"leave-me"}`)
+			body = `{"rooms":[` + strings.Join(rooms, ",") + `]}`
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/credentials":
+			var input struct {
+				DeviceID int64 `json:"device_id"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&input)
+			provisionCalls[input.DeviceID]++
+			if input.DeviceID == secondID && failSecond {
+				failSecond = false
+				status = http.StatusInternalServerError
+				body = `{"ok":false,"error":"temporary room failure"}`
+				break
+			}
+			code := fmt.Sprintf("device-%d", input.DeviceID)
+			dedicated[input.DeviceID] = code
+			body = fmt.Sprintf(`{"ok":true,"credential":"wbstream://%s","profile_generation":1,"protocol_version":"0.3.8"}`, code)
+		case request.Method == http.MethodDelete && request.URL.Path == fmt.Sprintf("/v1/bypass/rooms/%d/wb", groupID):
+			shared = false
+			body = `{"ok":true}`
+		case request.Method == http.MethodDelete:
+			wrongProviderDeletes++
+			body = `{"ok":true}`
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	run := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/components/bypass-wb/profiles", nil)
+		request.SetPathValue("id", "bypass-wb")
+		response := httptest.NewRecorder()
+		s.refreshComponentProfiles(response, request)
+		return response
+	}
+
+	firstAttempt := run()
+	if firstAttempt.Code != http.StatusConflict || !strings.Contains(firstAttempt.Body.String(), "retry Update to continue") {
+		t.Fatalf("first attempt status=%d body=%q", firstAttempt.Code, firstAttempt.Body.String())
+	}
+	first, _ := db.Device(firstID)
+	second, _ := db.Device(secondID)
+	if first.Credential != fmt.Sprintf("wbstream://device-%d", firstID) || second.Credential != "wbstream://shared-room" || !shared {
+		t.Fatalf("forward progress was rolled back: first=%#v second=%#v shared=%v", first, second, shared)
+	}
+
+	secondAttempt := run()
+	if secondAttempt.Code != http.StatusOK {
+		t.Fatalf("retry status=%d body=%q", secondAttempt.Code, secondAttempt.Body.String())
+	}
+	first, _ = db.Device(firstID)
+	second, _ = db.Device(secondID)
+	if first.Credential != fmt.Sprintf("wbstream://device-%d", firstID) || second.Credential != fmt.Sprintf("wbstream://device-%d", secondID) || shared {
+		t.Fatalf("routing rooms did not converge: first=%#v second=%#v shared=%v", first, second, shared)
+	}
+	if provisionCalls[firstID] != 1 || provisionCalls[secondID] != 2 || wrongProviderDeletes != 0 {
+		t.Fatalf("unexpected calls: provisions=%#v wrong deletes=%d", provisionCalls, wrongProviderDeletes)
 	}
 }
 
@@ -676,7 +817,7 @@ func TestAmneziaWGProfileRefreshRejectsMalformedSetAtomically(t *testing.T) {
 	}
 }
 
-func TestComponentProfileVersionUpdateRequiresAdminCSRFAndPreservesProfiles(t *testing.T) {
+func TestXrayProfileRefreshRequiresAdminCSRFAndPreservesUUID(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -697,7 +838,11 @@ func TestComponentProfileVersionUpdateRequiresAdminCSRFAndPreservesProfiles(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	deviceID, err := db.CreateDevice(groupID, "PC", "xray", "vless://unchanged@example")
+	deviceID, err := db.CreateDevice(groupID, "PC", "xray", "vless://device-uuid@old.example:443?type=tcp#Old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xhttpID, err := db.CreateDevice(groupID, "Tablet", "xray-xhttp", "vless://xhttp-uuid@old.example:28443?type=xhttp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,12 +850,26 @@ func TestComponentProfileVersionUpdateRequiresAdminCSRFAndPreservesProfiles(t *t
 	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
 		body := `{"components":[{"id":"xray","installed":true,"external":false,"profile_version":"26.3.27","profile_generation":1}]}`
+		if request.URL.Path == "/v1/credentials/render" {
+			var input struct {
+				Name       string `json:"name"`
+				Method     string `json:"method"`
+				Credential string `json:"credential"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.Name != "SBP · Family · PC" || input.Method != "xray" || !strings.HasPrefix(input.Credential, "vless://device-uuid@") {
+				t.Fatalf("unexpected render request: %#v", input)
+			}
+			body = `{"ok":true,"credential":"vless://device-uuid@current.example:443?security=reality&type=tcp#SBP%20%C2%B7%20Family%20%C2%B7%20PC","profile_generation":1,"protocol_version":"26.3.27"}`
+		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
 	mux := http.NewServeMux()
 	s.routes(mux)
-	path := "/api/components/xray/profile-version"
+	path := "/api/components/xray/profiles"
 
 	request := httptest.NewRequest(http.MethodPost, path, nil)
 	response := httptest.NewRecorder()
@@ -732,18 +891,65 @@ func TestComponentProfileVersionUpdateRequiresAdminCSRFAndPreservesProfiles(t *t
 	request.Header.Set("X-CSRF-Token", csrfToken)
 	response = httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || calls != 1 {
+	if response.Code != http.StatusOK || calls != 2 {
 		t.Fatalf("authenticated update status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("profile version update response is cacheable")
+		t.Fatal("profile refresh response is cacheable")
 	}
 	device, err := db.Device(deviceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if device.ProtocolVersion != "26.3.27" || device.Credential != "vless://unchanged@example" || device.ProfileGeneration != 1 {
-		t.Fatalf("profile material changed unexpectedly: %#v", device)
+	if device.ProtocolVersion != "26.3.27" || !strings.HasPrefix(device.Credential, "vless://device-uuid@current.example:443") || device.ProfileGeneration != 1 {
+		t.Fatalf("Xray profile was not refreshed with its UUID intact: %#v", device)
+	}
+	xhttp, _ := db.Device(xhttpID)
+	if xhttp.Credential != "vless://xhttp-uuid@old.example:28443?type=xhttp" {
+		t.Fatalf("XHTTP profile changed during TCP refresh: %#v", xhttp)
+	}
+}
+
+func TestXrayProfileRefreshRejectsMalformedSetAtomically(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	firstOld := "vless://first-uuid@old.example:443"
+	secondOld := "broken-profile"
+	firstID, _ := db.CreateDevice(groupID, "First", "xray", firstOld, "")
+	secondID, _ := db.CreateDevice(groupID, "Second", "xray", secondOld, "")
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		body := `{"components":[{"id":"xray","installed":true,"external":false,"profile_version":"26.3.27","profile_generation":1}]}`
+		if request.URL.Path == "/v1/credentials/render" {
+			var input struct {
+				Credential string `json:"credential"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&input)
+			if input.Credential == secondOld {
+				status = http.StatusBadRequest
+				body = `{"ok":false,"error":"failed to extract the UUID from the VLESS URL"}`
+			} else {
+				body = `{"ok":true,"credential":"vless://first-uuid@current.example:443","profile_generation":1,"protocol_version":"26.3.27"}`
+			}
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	request := httptest.NewRequest(http.MethodPost, "/api/components/xray/profiles", nil)
+	request.SetPathValue("id", "xray")
+	response := httptest.NewRecorder()
+	s.refreshComponentProfiles(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	first, _ := db.Device(firstID)
+	second, _ := db.Device(secondID)
+	if first.Credential != firstOld || second.Credential != secondOld {
+		t.Fatalf("partial Xray profile publication: first=%#v second=%#v", first, second)
 	}
 }
 

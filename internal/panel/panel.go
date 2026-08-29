@@ -51,6 +51,18 @@ var managedMethodByComponent = map[string]string{
 	"bypass-telemost": "bypass-telemost", "bypass-dion": "bypass-dion", "bypass-vk": "bypass-vk",
 }
 
+type routingComponentSpec struct {
+	method   string
+	provider string
+}
+
+var routingComponentSpecs = map[string]routingComponentSpec{
+	"bypass-wb":       {method: "bypass-wb", provider: "wbstream"},
+	"bypass-telemost": {method: "bypass-telemost", provider: "telemost"},
+	"bypass-dion":     {method: "bypass-dion", provider: "dion"},
+	"bypass-vk":       {method: "bypass-vk", provider: "vk"},
+}
+
 type server struct {
 	cfg           config.Config
 	db            *store.Store
@@ -127,7 +139,6 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("POST /api/update", admin(s.applyUpdate))
 	m.Handle("GET /api/update/progress", auth(s.updateProgress))
 	m.Handle("POST /api/components/{id}/install", admin(s.installComponent))
-	m.Handle("POST /api/components/{id}/profile-version", admin(s.updateComponentProfileVersion))
 	m.Handle("POST /api/components/amneziawg/update", admin(s.updateAmneziaWGComponent))
 	m.Handle("GET /api/components/amneziawg/update", admin(s.updateAmneziaWGComponent))
 	m.Handle("POST /api/components/{id}/profiles", admin(s.refreshComponentProfiles))
@@ -851,7 +862,7 @@ func (s *server) provisionCredential(deviceID, groupID int64, name, method strin
 	if err != nil {
 		return renderedProfile{}, fmt.Errorf("load credential group: %w", err)
 	}
-	profileName := fmt.Sprintf("SBP · %s · %s", strings.TrimSpace(group.Name), strings.TrimSpace(name))
+	profileName := managedProfileName(group.Name, name)
 	payload, _ := json.Marshal(map[string]any{"name": profileName, "method": method, "group_id": groupID, "device_id": deviceID})
 	req, _ := http.NewRequest("POST", "http://unix/v1/credentials", strings.NewReader(string(payload)))
 	req.Header.Set("Content-Type", "application/json")
@@ -875,6 +886,36 @@ func (s *server) provisionCredential(deviceID, groupID int64, name, method strin
 		return renderedProfile{}, errors.New("agent returned incomplete profile metadata")
 	}
 	return provisioned.renderedProfile, nil
+}
+
+func managedProfileName(groupName, deviceName string) string {
+	return fmt.Sprintf("SBP · %s · %s", strings.TrimSpace(groupName), strings.TrimSpace(deviceName))
+}
+
+func (s *server) renderCredential(name, method, credential string) (renderedProfile, error) {
+	payload, _ := json.Marshal(map[string]string{"name": name, "method": method, "credential": credential})
+	req, _ := http.NewRequest(http.MethodPost, "http://unix/v1/credentials/render", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		return renderedProfile{}, fmt.Errorf("agent unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	var rendered struct {
+		OK bool `json:"ok"`
+		renderedProfile
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rendered); err != nil || resp.StatusCode != http.StatusOK || !rendered.OK {
+		if rendered.Error == "" {
+			rendered.Error = "failed to render the current profile"
+		}
+		return renderedProfile{}, errors.New(rendered.Error)
+	}
+	if strings.TrimSpace(rendered.Credential) == "" || rendered.ProfileGeneration < 1 || strings.TrimSpace(rendered.ProtocolVersion) == "" {
+		return renderedProfile{}, errors.New("agent returned incomplete profile metadata")
+	}
+	return rendered.renderedProfile, nil
 }
 
 func normalizeDeviceMethod(method, format string) (string, string) {
@@ -1269,9 +1310,36 @@ func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if components, ok := result["components"].([]any); ok {
+		needsRoutingInventory := false
 		for _, raw := range components {
 			component, _ := raw.(map[string]any)
-			method := managedMethodByComponent[fmt.Sprint(component["id"])]
+			_, routing := routingComponentSpecs[fmt.Sprint(component["id"])]
+			installed, _ := component["installed"].(bool)
+			external, _ := component["external"].(bool)
+			if routing && installed && !external {
+				needsRoutingInventory = true
+				break
+			}
+		}
+		var routingDevices []store.Device
+		var routingRooms []bypassRoomSummary
+		if needsRoutingInventory {
+			var err error
+			routingDevices, err = s.db.ListAllDevices()
+			if err != nil {
+				fail(w, http.StatusInternalServerError, err)
+				return
+			}
+			routingRooms, err = s.loadBypassRooms()
+			if err != nil {
+				fail(w, http.StatusBadGateway, err)
+				return
+			}
+		}
+		for _, raw := range components {
+			component, _ := raw.(map[string]any)
+			id := fmt.Sprint(component["id"])
+			method := managedMethodByComponent[id]
 			if method == "" {
 				continue
 			}
@@ -1282,7 +1350,15 @@ func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
 			installed, _ := component["installed"].(bool)
 			external, _ := component["external"].(bool)
 			canUpgrade, _ := component["can_update"].(bool)
-			if canUpgrade {
+			routingDrift := 0
+			if spec, routing := routingComponentSpecs[id]; routing && installed && !external {
+				routingDrift = routingRoomDrift(spec, routingDevices, routingRooms)
+			}
+			if routingDrift > 0 {
+				component["can_update"] = true
+				component["update_kind"] = "routing"
+				component["profiles_to_update"] = routingDrift
+			} else if canUpgrade {
 				component["update_kind"] = "upgrade"
 			} else if installed && !external && profileVersion != "" && profileGeneration > 0 {
 				count, err := s.db.CountProfilesNotAtRevision(method, profileVersion, profileGeneration)
@@ -1291,14 +1367,11 @@ func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if count > 0 {
-					component["can_update"] = true
-					id, _ := component["id"].(string)
 					if _, ok := componentProfileRefreshers[id]; ok {
+						component["can_update"] = true
 						component["update_kind"] = "profile"
-					} else {
-						component["update_kind"] = "metadata"
+						component["profiles_to_update"] = count
 					}
-					component["profiles_to_update"] = count
 				}
 			}
 			count, err := s.db.CountDevicesByMethod(method)
@@ -1341,6 +1414,78 @@ type bypassRoomSummary struct {
 	Code       string `json:"code"`
 }
 
+func (s *server) loadBypassRooms() ([]bypassRoomSummary, error) {
+	req, _ := http.NewRequest(http.MethodGet, "http://unix/v1/bypass/rooms", nil)
+	resp, err := s.agent.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("agent unavailable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New("agent could not inspect routing rooms")
+	}
+	var result struct {
+		Rooms []bypassRoomSummary `json:"rooms"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return nil, errors.New("agent returned invalid room data")
+	}
+	return result.Rooms, nil
+}
+
+func routingRoomCode(value string) string {
+	code := strings.TrimSpace(value)
+	if before, _, found := strings.Cut(code, "#"); found {
+		code = before
+	}
+	if before, _, found := strings.Cut(code, "?"); found {
+		code = before
+	}
+	code = strings.TrimRight(code, "/")
+	if index := strings.LastIndex(code, "/"); index >= 0 {
+		code = code[index+1:]
+	}
+	if before, after, found := strings.Cut(code, "://"); found && before != "" {
+		code = after
+	}
+	return strings.TrimSpace(code)
+}
+
+func classifyRoutingRooms(spec routingComponentSpec, devices []store.Device, rooms []bypassRoomSummary) (map[int64]bool, []bypassRoomSummary) {
+	expected := map[int64]store.Device{}
+	for _, device := range devices {
+		if device.Method == spec.method {
+			expected[device.ID] = device
+		}
+	}
+	matched := map[int64]bool{}
+	obsolete := make([]bypassRoomSummary, 0)
+	for _, room := range rooms {
+		if room.Provider != spec.provider {
+			continue
+		}
+		device, ok := expected[room.DeviceID]
+		if room.DeviceID < 1 || !ok || room.GroupID != device.GroupID || matched[room.DeviceID] ||
+			routingRoomCode(room.Code) == "" || routingRoomCode(room.Code) != routingRoomCode(device.Credential) {
+			obsolete = append(obsolete, room)
+			continue
+		}
+		matched[room.DeviceID] = true
+	}
+	return matched, obsolete
+}
+
+func routingRoomDrift(spec routingComponentSpec, devices []store.Device, rooms []bypassRoomSummary) int {
+	matched, obsolete := classifyRoutingRooms(spec, devices, rooms)
+	drift := len(obsolete)
+	for _, device := range devices {
+		if device.Method == spec.method && !matched[device.ID] {
+			drift++
+		}
+	}
+	return drift
+}
+
 func nameBypassRooms(rooms []bypassRoomSummary, groups []store.Group, devices []store.Device) []bypassRoomSummary {
 	names := make(map[int64]string, len(groups))
 	for _, group := range groups {
@@ -1380,24 +1525,9 @@ func nameBypassRooms(rooms []bypassRoomSummary, groups []store.Group, devices []
 }
 
 func (s *server) bypassRooms(w http.ResponseWriter, r *http.Request) {
-	req, _ := http.NewRequest(http.MethodGet, "http://unix/v1/bypass/rooms", nil)
-	resp, err := s.agent.Do(req)
+	rooms, err := s.loadBypassRooms()
 	if err != nil {
-		fail(w, http.StatusBadGateway, fmt.Errorf("agent unavailable: %w", err))
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
-		return
-	}
-	var result struct {
-		Rooms []bypassRoomSummary `json:"rooms"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		fail(w, http.StatusBadGateway, errors.New("agent returned invalid room data"))
+		fail(w, http.StatusBadGateway, err)
 		return
 	}
 	groups, err := s.db.ListGroups()
@@ -1410,7 +1540,7 @@ func (s *server) bypassRooms(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "rooms": nameBypassRooms(result.Rooms, groups, devices)})
+	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "rooms": nameBypassRooms(rooms, groups, devices)})
 }
 
 func (s *server) updateInfo(w http.ResponseWriter, r *http.Request) {
@@ -1482,37 +1612,6 @@ func (s *server) componentProfileState(id string) (managedComponentProfileState,
 		}
 	}
 	return managedComponentProfileState{}, errors.New("unsupported component")
-}
-
-func (s *server) updateComponentProfileVersion(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSpace(r.PathValue("id"))
-	method := managedMethodByComponent[id]
-	if method == "" {
-		fail(w, http.StatusBadRequest, errors.New("this component does not create device profiles"))
-		return
-	}
-	s.credentialMu.Lock()
-	defer s.credentialMu.Unlock()
-	component, err := s.componentProfileState(id)
-	if err != nil {
-		fail(w, http.StatusBadGateway, err)
-		return
-	}
-	version := strings.TrimSpace(component.ProfileVersion)
-	if !component.Installed || component.External || version == "" || component.ProfileGeneration < 1 {
-		fail(w, http.StatusConflict, errors.New("the managed component is not installed or has no profile version"))
-		return
-	}
-	updated, err := s.db.SetProfilesRevision(method, version, component.ProfileGeneration)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, fmt.Errorf("record %s profile version: %w", method, err))
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	jsonOut(w, http.StatusOK, map[string]any{
-		"ok": true, "component_id": id, "protocol_version": version, "profile_generation": component.ProfileGeneration, "updated_profiles": updated,
-		"output": fmt.Sprintf("Assigned profile revision %s/%d to %d %s device(s). Connection profiles and keys were not changed.", version, component.ProfileGeneration, updated, method),
-	})
 }
 
 func profileConfigValue(body, section, key string) string {
@@ -1590,12 +1689,27 @@ func refreshAmneziaWGProfileMTU(credential string) (string, error) {
 }
 
 type componentProfileRefresher struct {
-	method    string
-	transform func(string) (string, error)
-	result    func(int) string
+	method      string
+	agentRender bool
+	transform   func(string) (string, error)
+	result      func(int) string
 }
 
 var componentProfileRefreshers = map[string]componentProfileRefresher{
+	"xray": {
+		method:      "xray",
+		agentRender: true,
+		result: func(count int) string {
+			return fmt.Sprintf("Refreshed %d Xray TCP profile(s) from current server settings. UUIDs and the running container were not changed.", count)
+		},
+	},
+	"xray-xhttp": {
+		method:      "xray-xhttp",
+		agentRender: true,
+		result: func(count int) string {
+			return fmt.Sprintf("Refreshed %d Xray XHTTP profile(s) from current server settings. UUIDs and the running container were not changed.", count)
+		},
+	},
 	"amneziawg": {
 		method:    "amneziawg",
 		transform: refreshAmneziaWGProfileMTU,
@@ -1609,7 +1723,8 @@ func (s *server) refreshComponentProfiles(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Cache-Control", "no-store")
 	id := strings.TrimSpace(r.PathValue("id"))
 	refresher, ok := componentProfileRefreshers[id]
-	if !ok {
+	routingSpec, routing := routingComponentSpecs[id]
+	if !ok && !routing {
 		fail(w, http.StatusBadRequest, errors.New("this component does not support profile refreshes"))
 		return
 	}
@@ -1624,20 +1739,61 @@ func (s *server) refreshComponentProfiles(w http.ResponseWriter, r *http.Request
 		fail(w, http.StatusConflict, errors.New("the managed component is not installed or has no profile revision"))
 		return
 	}
+	if routing {
+		updated, err := s.reconcileRoutingComponent(component, routingSpec)
+		if err != nil {
+			fail(w, http.StatusConflict, err)
+			return
+		}
+		jsonOut(w, http.StatusOK, map[string]any{
+			"ok": true, "component_id": id, "protocol_version": component.ProfileVersion,
+			"profile_generation": component.ProfileGeneration, "updated_profiles": updated,
+			"output": fmt.Sprintf("Reconciled all %s rooms. %d device profile(s) received a current dedicated room.", id, updated),
+		})
+		return
+	}
 	devices, err := s.db.ListAllDevices()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
+	}
+	groups, err := s.db.ListGroups()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	groupNames := make(map[int64]string, len(groups))
+	for _, group := range groups {
+		groupNames[group.ID] = group.Name
 	}
 	updates := make([]store.DeviceProfileUpdate, 0)
 	for _, device := range devices {
 		if device.Method != refresher.method {
 			continue
 		}
-		credential, err := refresher.transform(device.Credential)
-		if err != nil {
-			fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: %w", device.Name, err))
-			return
+		credential := ""
+		if refresher.agentRender {
+			groupName, ok := groupNames[device.GroupID]
+			if !ok {
+				fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: group is missing", device.Name))
+				return
+			}
+			profile, err := s.renderCredential(managedProfileName(groupName, device.Name), device.Method, device.Credential)
+			if err != nil {
+				fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: %w", device.Name, err))
+				return
+			}
+			if profile.ProfileGeneration != component.ProfileGeneration || strings.TrimSpace(profile.ProtocolVersion) != strings.TrimSpace(component.ProfileVersion) {
+				fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: agent rendered revision %s/%d instead of %s/%d", device.Name, profile.ProtocolVersion, profile.ProfileGeneration, component.ProfileVersion, component.ProfileGeneration))
+				return
+			}
+			credential = profile.Credential
+		} else {
+			credential, err = refresher.transform(device.Credential)
+			if err != nil {
+				fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: %w", device.Name, err))
+				return
+			}
 		}
 		updates = append(updates, store.DeviceProfileUpdate{
 			DeviceID: device.ID, Name: device.Name, Credential: credential,
@@ -1653,6 +1809,90 @@ func (s *server) refreshComponentProfiles(w http.ResponseWriter, r *http.Request
 		"profile_generation": component.ProfileGeneration, "updated_profiles": len(updates),
 		"output": refresher.result(len(updates)),
 	})
+}
+
+func (s *server) reconcileRoutingComponent(component managedComponentProfileState, spec routingComponentSpec) (int, error) {
+	devices, err := s.db.ListAllDevices()
+	if err != nil {
+		return 0, err
+	}
+	rooms, err := s.loadBypassRooms()
+	if err != nil {
+		return 0, err
+	}
+	matched, _ := classifyRoutingRooms(spec, devices, rooms)
+	groups, err := s.db.ListGroups()
+	if err != nil {
+		return 0, err
+	}
+	groupByID := make(map[int64]store.Group, len(groups))
+	for _, group := range groups {
+		groupByID[group.ID] = group
+	}
+	updated := 0
+	for index := range devices {
+		device := &devices[index]
+		if device.Method != spec.method || matched[device.ID] {
+			continue
+		}
+		profile, err := s.provisionCredential(device.ID, device.GroupID, device.Name, device.Method)
+		if err != nil {
+			return updated, fmt.Errorf("update stopped after %d profile(s): prepare %s: %w; retry Update to continue", updated, device.Name, err)
+		}
+		device.Credential = profile.Credential
+		device.ProfileGeneration = profile.ProfileGeneration
+		device.ProtocolVersion = profile.ProtocolVersion
+		group, ok := groupByID[device.GroupID]
+		if !ok {
+			return updated, fmt.Errorf("update stopped after %d profile(s): group for %s is missing; retry Update after repairing the group", updated, device.Name)
+		}
+		if !device.Enabled || !groupAccessEnabled(group) {
+			if err := s.controlCredential(*device, false); err != nil {
+				return updated, fmt.Errorf("update stopped after %d profile(s): suspend %s: %w; retry Update to continue", updated, device.Name, err)
+			}
+		}
+		if err := s.db.SetDeviceCredential(device.ID, profile.Credential, profile.ProfileGeneration, profile.ProtocolVersion); err != nil {
+			return updated, fmt.Errorf("update stopped after %d profile(s): publish %s: %w; retry Update to continue", updated, device.Name, err)
+		}
+		updated++
+	}
+
+	currentDevices, err := s.db.ListAllDevices()
+	if err != nil {
+		return updated, err
+	}
+	currentRooms, err := s.loadBypassRooms()
+	if err != nil {
+		return updated, err
+	}
+	_, obsolete := classifyRoutingRooms(spec, currentDevices, currentRooms)
+	for _, room := range obsolete {
+		if room.DeviceID > 0 {
+			device := store.Device{ID: room.DeviceID, GroupID: room.GroupID, Method: spec.method}
+			if err := s.removeBypassDeviceRoom(device, false); err != nil {
+				return updated, fmt.Errorf("current profiles are saved, but obsolete device room %d could not be removed: %w; retry Update to continue", room.DeviceID, err)
+			}
+			continue
+		}
+		if err := s.removeBypassRoom(room.GroupID, spec.method, false); err != nil {
+			return updated, fmt.Errorf("current profiles are saved, but obsolete shared room for group %d could not be removed: %w; retry Update to continue", room.GroupID, err)
+		}
+	}
+	if _, err := s.db.SetProfilesRevision(spec.method, component.ProfileVersion, component.ProfileGeneration); err != nil {
+		return updated, fmt.Errorf("rooms are current, but profile revision could not be recorded: %w; retry Update to continue", err)
+	}
+	finalDevices, err := s.db.ListAllDevices()
+	if err != nil {
+		return updated, err
+	}
+	finalRooms, err := s.loadBypassRooms()
+	if err != nil {
+		return updated, err
+	}
+	if drift := routingRoomDrift(spec, finalDevices, finalRooms); drift != 0 {
+		return updated, fmt.Errorf("%d routing room difference(s) remain; retry Update to continue", drift)
+	}
+	return updated, nil
 }
 
 type amneziaWGComponentUpdateProfile struct {

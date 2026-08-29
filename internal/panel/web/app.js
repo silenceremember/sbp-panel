@@ -1042,30 +1042,6 @@ async function runComponentUpdate(component, button) {
   }
 }
 
-async function runComponentProfileVersionUpdate(component, button) {
-  try {
-    return await runPendingAction(
-      `component:${component.id}:profile-version`,
-      button,
-      'Updating…',
-      async () => {
-        setLifecycleControls({component_id: component.id, operation: 'update', status: 'running'});
-        try {
-          const updated = await api(`/api/components/${component.id}/profile-version`, {method: 'POST'});
-          await Promise.all([refreshGroups(), loadDiscovery()]);
-          notify(updated.output || `Profile version ${updated.protocol_version} recorded.`, 'success');
-        } finally {
-          setLifecycleControls(null);
-        }
-      }
-    );
-  } catch (error) {
-    setLifecycleControls(null);
-    notifyError(error);
-    return false;
-  }
-}
-
 async function runComponentProfileRefresh(component, button) {
   try {
     return await runPendingAction(
@@ -1480,12 +1456,18 @@ async function loadDiscovery(prefetched = null) {
           return;
         }
         if (component.update_kind === 'profile') {
-          if (component.id !== 'amneziawg') return;
-          if (!confirm('Refresh every AmneziaWG profile with the current client configuration? Server keys, peers, and the container will not change. All users must copy and import their updated profiles.')) return;
+          const warning = component.id === 'amneziawg'
+            ? 'Refresh every AmneziaWG profile with the current client configuration? Server keys, peers, and the container will not change. All users must copy and import their updated profiles.'
+            : `Refresh every ${component.name} link from the current server settings? UUIDs and the running container will not change. Users must copy links that changed.`;
+          if (!confirm(warning)) return;
           await runComponentProfileRefresh(component, event.currentTarget);
           return;
         }
-        await runComponentProfileVersionUpdate(component, event.currentTarget);
+        if (component.update_kind === 'routing') {
+          if (!confirm(`Bring every ${component.name} room to the current one-room-per-device layout? Links that still use another layout will change and must be copied again.`)) return;
+          await runComponentProfileRefresh(component, event.currentTarget);
+          return;
+        }
       });
       row.querySelector('[data-component-settings]')?.addEventListener('click', () => {
         if (isBypass) bypassSettingsDialog(component);

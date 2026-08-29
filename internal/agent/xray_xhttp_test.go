@@ -4,6 +4,9 @@ import (
 	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -107,6 +110,90 @@ func TestXrayXHTTPCredentialLink(t *testing.T) {
 	}
 	if parsed.Fragment != "Phone #1" || !strings.Contains(link, "path=%2Fsecret_path-value") {
 		t.Fatalf("link escaping = %q", link)
+	}
+}
+
+func TestRenderExistingXrayCredentialUsesCurrentMetadataAndPreservesUUID(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		variant xrayVariant
+		path    string
+	}{
+		{name: "tcp", variant: stableXrayVariant},
+		{name: "xhttp", variant: xhttpXrayVariant, path: "/current-path"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			variant := test.variant
+			variant.MetadataFile = filepath.Join(t.TempDir(), "server.json")
+			metadata := xrayClientMetadata{
+				Server: "203.0.113.9", PublicKey: "current-public-key", ShortID: "fedcba9876543210",
+				SNI: "current.example", Path: test.path,
+			}
+			body, _ := json.Marshal(metadata)
+			if err := os.WriteFile(variant.MetadataFile, body, 0600); err != nil {
+				t.Fatal(err)
+			}
+			link, err := renderExistingXrayCredential(variant, "SBP · Family · Phone", "vless://11111111-2222-4333-8444-555555555555@old.example:1?type=old#Old")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := url.Parse(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.User.Username() != "11111111-2222-4333-8444-555555555555" || parsed.Host != "203.0.113.9:"+fmt.Sprint(variant.PublicPort) {
+				t.Fatalf("rendered authority changed identity or ignored metadata: %s", link)
+			}
+			if parsed.Query().Get("pbk") != "current-public-key" || parsed.Query().Get("sni") != "current.example" || parsed.Query().Get("type") != variant.Network {
+				t.Fatalf("rendered query is stale: %s", link)
+			}
+			if variant.Network == "xhttp" && parsed.Query().Get("path") != test.path {
+				t.Fatalf("rendered XHTTP path is stale: %s", link)
+			}
+			if parsed.Fragment != "SBP · Family · Phone" {
+				t.Fatalf("rendered profile name=%q", parsed.Fragment)
+			}
+		})
+	}
+}
+
+func TestRenderExistingXrayCredentialRejectsMalformedProfile(t *testing.T) {
+	variant := stableXrayVariant
+	variant.MetadataFile = filepath.Join(t.TempDir(), "server.json")
+	for _, credential := range []string{"", "https://example.com", "vless://@example.com", "vless://bad id@example.com"} {
+		if _, err := renderExistingXrayCredential(variant, "Phone", credential); err == nil || !strings.Contains(err.Error(), "extract the UUID") {
+			t.Fatalf("malformed credential %q accepted: %v", credential, err)
+		}
+	}
+}
+
+func TestRenderCredentialHTTPContract(t *testing.T) {
+	original := stableXrayVariant
+	t.Cleanup(func() { stableXrayVariant = original })
+	stableXrayVariant.MetadataFile = filepath.Join(t.TempDir(), "server.json")
+	metadata, _ := json.Marshal(xrayClientMetadata{Server: "203.0.113.7", PublicKey: "public", ShortID: "0123456789abcdef", SNI: "www.googletagmanager.com"})
+	if err := os.WriteFile(stableXrayVariant.MetadataFile, metadata, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/credentials/render", strings.NewReader(`{"name":"SBP · Family · PC","method":"xray","credential":"vless://device-uuid@old.example:443"}`))
+	response := httptest.NewRecorder()
+	renderCredentialHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"profile_generation":1`) || !strings.Contains(response.Body.String(), "vless://device-uuid@203.0.113.7:443") {
+		t.Fatalf("success status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	for _, body := range []string{
+		`{"name":"PC","method":"amneziawg","credential":"profile"}`,
+		`{"name":"PC","method":"xray","credential":"broken"}`,
+		strings.Repeat("x", 64<<10+1),
+	} {
+		request = httptest.NewRequest(http.MethodPost, "/v1/credentials/render", strings.NewReader(body))
+		response = httptest.NewRecorder()
+		renderCredentialHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"ok":false`) {
+			t.Fatalf("invalid request status=%d body=%q", response.Code, response.Body.String())
+		}
 	}
 }
 

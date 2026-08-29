@@ -2877,6 +2877,35 @@ func provisionCredential(method, name string, groupID, deviceID int64, c config.
 	return desiredProfile(method, credential)
 }
 
+func renderCredentialHTTP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10+1))
+	var in struct {
+		Name       string `json:"name"`
+		Method     string `json:"method"`
+		Credential string `json:"credential"`
+	}
+	if err != nil || len(body) == 0 || len(body) > 64<<10 || json.Unmarshal(body, &in) != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid profile render request"))
+		return
+	}
+	variant, ok := xrayVariantForMethod(in.Method)
+	if !ok || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Credential) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("only existing Xray profiles can be rendered"))
+		return
+	}
+	credential, err := renderExistingXrayCredential(variant, in.Name, in.Credential)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	profile, err := desiredProfile(in.Method, credential)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "credential": profile.Credential, "profile_generation": profile.ProfileGeneration, "protocol_version": profile.ProtocolVersion})
+}
+
 func controlXrayCredential(name, credential string, enabled bool) error {
 	return controlXrayCredentialsFor(stableXrayVariant, []string{credential}, enabled)
 }
@@ -2890,11 +2919,11 @@ func controlXrayCredentialsFor(variant xrayVariant, credentials []string, enable
 func controlXrayCredentialsForLocked(variant xrayVariant, credentials []string, enabled bool) error {
 	ids := make(map[string]bool, len(credentials))
 	for _, credential := range credentials {
-		match := regexp.MustCompile(`^vless://([^@]+)@`).FindStringSubmatch(strings.TrimSpace(credential))
-		if len(match) != 2 {
-			return errors.New("failed to extract the UUID from the VLESS URL")
+		id, err := xrayCredentialID(credential)
+		if err != nil {
+			return err
 		}
-		ids[match[1]] = true
+		ids[id] = true
 	}
 	if len(ids) == 0 {
 		return nil
@@ -3519,6 +3548,7 @@ func Run(configPath string) error {
 		}
 		writeJSON(w, map[string]any{"ok": true, "credential": profile.Credential, "profile_generation": profile.ProfileGeneration, "protocol_version": profile.ProtocolVersion})
 	})
+	mux.HandleFunc("POST /v1/credentials/render", renderCredentialHTTP)
 	mux.HandleFunc("DELETE /v1/bypass/rooms/{groupID}/{provider}", func(w http.ResponseWriter, r *http.Request) {
 		groupID, err := strconv.ParseInt(r.PathValue("groupID"), 10, 64)
 		if err != nil {
