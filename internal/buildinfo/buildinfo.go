@@ -3,7 +3,7 @@ package buildinfo
 const (
 	Name       = "Simple Bridge Panel"
 	Version    = "1.4.4"
-	Prerelease = true
+	Prerelease = false
 	Repository = "silenceremember/sbp-panel"
 )
 
