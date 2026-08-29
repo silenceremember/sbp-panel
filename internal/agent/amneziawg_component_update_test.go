@@ -31,7 +31,7 @@ func TestGenerateAmneziaWG3DeploymentReissuesAllProfilesAndOnlyActivatesDesiredP
 		t.Fatalf("profiles=%#v", profiles)
 	}
 	for index, profile := range profiles {
-		if profile.ProfileGeneration != 2 || profile.ProtocolVersion != "3.1" || !strings.Contains(profile.Credential, "MTU = 1280") || !strings.Contains(profile.Credential, "HeaderProtectionKey =") {
+		if profile.ProfileGeneration != amneziaWGProfileGeneration || profile.ProtocolVersion != "3.1" || !strings.Contains(profile.Credential, "MTU = 1280") || !strings.Contains(profile.Credential, "HeaderProtectionKey =") {
 			t.Fatalf("profile %d is incomplete: %#v", index, profile)
 		}
 	}

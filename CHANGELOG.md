@@ -3,6 +3,11 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.4.4] - 2026-08-29
+
+- Added global profile-revision detection so component Update appears after generated configuration changes.
+- Added an atomic AmneziaWG profile refresh that applies MTU 1280 to every existing AWG 3.1 profile without changing server keys, peers, or the container.
+
 ## [1.4.3] - 2026-08-29
 
 - Changed newly issued AmneziaWG client profiles to use the conservative MTU 1280 default for more reliable Windows and mobile connectivity.

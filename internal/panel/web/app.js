@@ -1066,6 +1066,31 @@ async function runComponentProfileVersionUpdate(component, button) {
   }
 }
 
+async function runComponentProfileRefresh(component, button) {
+  try {
+    return await runPendingAction(
+      `component:${component.id}:profile-refresh`,
+      button,
+      'Updating…',
+      async () => {
+        setLifecycleControls({component_id: component.id, operation: 'update', status: 'running'});
+        try {
+          const updated = await api(`/api/components/${component.id}/profiles`, {method: 'POST'});
+          await Promise.all([refreshGroups(), loadDiscovery()]);
+          notify(updated.output || 'All component profiles were refreshed.', 'success', 'Profiles updated');
+        } finally {
+          setLifecycleControls(null);
+        }
+      }
+    );
+  } catch (error) {
+    setLifecycleControls(null);
+    if (button.isConnected) { button.disabled = false; button.textContent = 'Retry'; }
+    notifyError(error);
+    return false;
+  }
+}
+
 function lifecyclePendingLabel(operation) {
   if (operation === 'update') return 'Updating…';
   if (operation === 'install') return 'Installing…';
@@ -1452,6 +1477,12 @@ async function loadDiscovery(prefetched = null) {
           if (component.id !== 'amneziawg') return;
           if (!confirm('Update AmneziaWG to protocol 3.1? The server identity and every device key will be replaced. All users must import their newly issued profiles.')) return;
           await runComponentUpdate(component, event.currentTarget);
+          return;
+        }
+        if (component.update_kind === 'profile') {
+          if (component.id !== 'amneziawg') return;
+          if (!confirm('Refresh every AmneziaWG profile with the current client configuration? Server keys, peers, and the container will not change. All users must copy and import their updated profiles.')) return;
+          await runComponentProfileRefresh(component, event.currentTarget);
           return;
         }
         await runComponentProfileVersionUpdate(component, event.currentTarget);

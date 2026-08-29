@@ -69,14 +69,19 @@ func TestComponentStatesKeepOwnedPrerequisitesManaged(t *testing.T) {
 
 func TestProtocolComponentsExposeMachineReadableProfileVersions(t *testing.T) {
 	components := componentStates(Discovery{images: map[string]bool{}}, false)
-	want := map[string]string{
-		"xray": "26.3.27", "xray-xhttp": "26.3.27", "amneziawg": "3.1",
-		"bypass-wb": "0.3.8", "bypass-telemost": "0.3.8", "bypass-dion": "0.3.8", "bypass-vk": "0.3.8",
+	want := map[string]struct {
+		version    string
+		generation int
+	}{
+		"xray": {version: "26.3.27", generation: 1}, "xray-xhttp": {version: "26.3.27", generation: 1},
+		"amneziawg": {version: "3.1", generation: amneziaWGProfileGeneration},
+		"bypass-wb": {version: "0.3.8", generation: 1}, "bypass-telemost": {version: "0.3.8", generation: 1},
+		"bypass-dion": {version: "0.3.8", generation: 1}, "bypass-vk": {version: "0.3.8", generation: 1},
 	}
-	for id, version := range want {
+	for id, expected := range want {
 		component := componentState(t, components, id)
-		if component.ProfileVersion != version || component.CanUpdate {
-			t.Errorf("%s profile metadata = %#v, want version %q without an agent-side update decision", id, component, version)
+		if component.ProfileVersion != expected.version || component.ProfileGeneration != expected.generation || component.CanUpdate {
+			t.Errorf("%s profile metadata = %#v, want revision %s/%d without an agent-side update decision", id, component, expected.version, expected.generation)
 		}
 	}
 }

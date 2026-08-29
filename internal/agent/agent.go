@@ -543,6 +543,7 @@ type Component struct {
 	CanRemoveExternal bool   `json:"can_remove_external"`
 	Version           string `json:"version,omitempty"`
 	ProfileVersion    string `json:"profile_version,omitempty"`
+	ProfileGeneration int    `json:"profile_generation,omitempty"`
 	CanInstall        bool   `json:"can_install"`
 	CanUninstall      bool   `json:"can_uninstall"`
 	CanUpdate         bool   `json:"can_update"`
@@ -739,13 +740,13 @@ func componentStates(d Discovery, bbr bool) []Component {
 	return []Component{
 		{ID: "tweaks", Name: "Network tuning", Installed: tweaksOwned, External: tweaksExternal, CanRemoveExternal: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: tweaksOwned, Description: "Applies validated TCP congestion control and queue discipline settings at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
 		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal && !dockerComposePresent, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0 && !dockerComposePresent, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
-		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", ProfileVersion: "26.3.27", Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
-		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", ProfileVersion: "26.3.27", Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
-		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, CanUpdate: awgManaged && awgProtocol != "3.1", Version: awgProtocol + " (engine " + awgVersion + ")", ProfileVersion: awgProtocol, Description: "Provides an AmneziaWG 3.1 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
-		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated WB Stream connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: wbNote},
-		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated Yandex Telemost connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
-		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated DION connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: dionNote},
-		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", Description: "Creates one dedicated VK Calls connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: vkNote},
+		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", ProfileVersion: "26.3.27", ProfileGeneration: 1, Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
+		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", ProfileVersion: "26.3.27", ProfileGeneration: 1, Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
+		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, CanUpdate: awgManaged && awgProtocol != "3.1", Version: awgProtocol + " (engine " + awgVersion + ")", ProfileVersion: awgProtocol, ProfileGeneration: amneziaWGProfileGeneration, Description: "Provides an AmneziaWG 3.1 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
+		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated WB Stream connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: wbNote},
+		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated Yandex Telemost connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
+		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated DION connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: dionNote},
+		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated VK Calls connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: vkNote},
 	}
 }
 
@@ -1800,6 +1801,7 @@ const awgVersion = "3.1.20260814"
 const awgBaseImage = "amneziavpn/amneziawg-go:" + awgVersion + "@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a"
 const awgPort = 48692
 const amneziaWGClientMTU = 1280
+const amneziaWGProfileGeneration = 3
 const amneziaWGDockerfile = "FROM " + awgBaseImage + "\nRUN apk add --no-cache bash dumb-init iptables\nCOPY start.sh /opt/amnezia/start.sh\nRUN chmod 755 /opt/amnezia/start.sh\nENTRYPOINT [\"dumb-init\",\"/opt/amnezia/start.sh\"]\n"
 const amneziaWGStartScript = `#!/bin/bash
 set -e
@@ -2844,7 +2846,7 @@ func desiredProfile(method, credential string) (renderedProfile, error) {
 	case "xray", "xray-xhttp":
 		profile.ProtocolVersion = "26.3.27"
 	case "amneziawg":
-		profile.ProfileGeneration = 2
+		profile.ProfileGeneration = amneziaWGProfileGeneration
 		profile.ProtocolVersion = "3.1"
 	case "bypass-wb", "bypass-telemost", "bypass-dion", "bypass-vk":
 		profile.ProtocolVersion = "0.3.8"

@@ -134,10 +134,10 @@ Routing integrations create one independent room for each new device. Historical
 | Area | Behavior |
 |---|---|
 | Device changes | Edit changes the name; recreate a device to issue a new profile; runtime membership changes live without restarting shared containers |
-| Component version labels | **Update** appears when device version labels differ from the installed managed component; one action assigns the current version to every device using that method without changing profiles, keys, rooms, or containers |
+| Component profile revisions | **Update** appears when stored profiles differ from the current component version or generated-configuration revision; one component action updates every matching profile |
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
 | Component lifecycle | An active install, update, or removal is restored after a browser reload and conflicting actions remain disabled until it finishes |
-| AmneziaWG component update | **Update** replaces the complete managed deployment with protocol 3.1, rotates the server identity and every device key together, and requires every user to import the newly issued profile |
+| AmneziaWG component update | A protocol upgrade replaces the complete deployment and rotates all keys; a client-configuration revision refreshes every stored profile atomically without changing server keys, peers, or the container; both require users to import the newly issued profiles |
 | Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |
 | Docker settings | Install, repair, or remove Docker Compose v2; verified external Ubuntu packages can be removed without adoption, while unknown CLI plugins remain untouched; includes a read-only container list |
 | REALITY settings | Each Xray component keeps its default profile SNI and can save a validated TLS target plus additional server-side SNI hostnames before installation or apply them to its installed managed container |

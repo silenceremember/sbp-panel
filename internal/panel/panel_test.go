@@ -174,7 +174,7 @@ func TestAmneziaWGComponentUpdatePublishesEveryProfileThenCommits(t *testing.T) 
 		calls = append(calls, request.Method+" "+request.URL.RequestURI())
 		body := `{"ok":true}`
 		if request.Method == http.MethodGet {
-			body = fmt.Sprintf(`{"ok":true,"job":{"component_id":"amneziawg","operation":"update","status":"done"},"result":{"token":%q,"devices":[{"device_id":%d,"name":"Phone","active":true}],"profiles":[{"device_id":%d,"credential":"new-profile","profile_generation":2,"protocol_version":"3.1"}]}}`, token, deviceID, deviceID)
+			body = fmt.Sprintf(`{"ok":true,"job":{"component_id":"amneziawg","operation":"update","status":"done"},"result":{"token":%q,"devices":[{"device_id":%d,"name":"Phone","active":true}],"profiles":[{"device_id":%d,"credential":"new-profile","profile_generation":3,"protocol_version":"3.1"}]}}`, token, deviceID, deviceID)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
@@ -191,7 +191,7 @@ func TestAmneziaWGComponentUpdatePublishesEveryProfileThenCommits(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if device.Credential != "new-profile" || device.ProfileGeneration != 2 || device.ProtocolVersion != "3.1" {
+	if device.Credential != "new-profile" || device.ProfileGeneration != 3 || device.ProtocolVersion != "3.1" {
 		t.Fatalf("profile was not published: %#v", device)
 	}
 	wantCommit := "POST /v1/components/amneziawg/update/" + token + "/commit"
@@ -216,7 +216,7 @@ func TestAmneziaWGComponentUpdateRestoresProfilesWhenCommitFails(t *testing.T) {
 		status, body := http.StatusOK, `{"ok":true}`
 		switch request.Method {
 		case http.MethodGet:
-			body = fmt.Sprintf(`{"ok":true,"job":{"operation":"update","status":"done"},"result":{"token":%q,"devices":[{"device_id":%d,"name":"Phone","active":true}],"profiles":[{"device_id":%d,"credential":"new-profile","profile_generation":2,"protocol_version":"3.1"}]}}`, token, deviceID, deviceID)
+			body = fmt.Sprintf(`{"ok":true,"job":{"operation":"update","status":"done"},"result":{"token":%q,"devices":[{"device_id":%d,"name":"Phone","active":true}],"profiles":[{"device_id":%d,"credential":"new-profile","profile_generation":3,"protocol_version":"3.1"}]}}`, token, deviceID, deviceID)
 		case http.MethodPost:
 			status, body = http.StatusInternalServerError, `{"ok":false,"error":"commit failed"}`
 		}
@@ -416,6 +416,8 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"data-component-update",
 		"/api/components/${component.id}/update",
 		"runComponentProfileVersionUpdate(component, event.currentTarget)",
+		"runComponentProfileRefresh(component, event.currentTarget)",
+		"/api/components/${component.id}/profiles",
 		"/api/components/${component.id}/profile-version",
 		"/api/components/${component.id}/settings",
 	} {
@@ -474,7 +476,7 @@ func TestDiscoveryOffersGlobalVersionUpdateForMismatchedProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		body := `{"ok":true,"components":[{"id":"xray","installed":true,"external":false,"can_update":false,"profile_version":"26.3.27"}]}`
+		body := `{"ok":true,"components":[{"id":"xray","installed":true,"external":false,"can_update":false,"profile_version":"26.3.27","profile_generation":1}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	s := &server{db: db, agent: agent}
@@ -512,7 +514,7 @@ func TestDiscoveryKeepsAmneziaWGUpgradeAheadOfMetadataUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		body := `{"ok":true,"components":[{"id":"amneziawg","installed":true,"external":false,"can_update":true,"profile_version":"2.0"}]}`
+		body := `{"ok":true,"components":[{"id":"amneziawg","installed":true,"external":false,"can_update":true,"profile_version":"2.0","profile_generation":3}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	s := &server{db: db, agent: agent}
@@ -532,6 +534,145 @@ func TestDiscoveryKeepsAmneziaWGUpgradeAheadOfMetadataUpdate(t *testing.T) {
 	}
 	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "upgrade" {
 		t.Fatalf("unexpected AmneziaWG update state: %#v", result.Components)
+	}
+}
+
+func TestDiscoveryOffersAmneziaWGProfileRefreshForOlderGeneration(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	deviceID, _ := db.CreateDevice(groupID, "Phone", "amneziawg", "old-profile", "app")
+	if err := db.SetDeviceCredential(deviceID, "old-profile", 2, "3.1"); err != nil {
+		t.Fatal(err)
+	}
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"ok":true,"components":[{"id":"amneziawg","installed":true,"external":false,"can_update":false,"profile_version":"3.1","profile_generation":3}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	s.discovery(response, httptest.NewRequest(http.MethodGet, "/api/discovery", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	var result struct {
+		Components []struct {
+			CanUpdate        bool   `json:"can_update"`
+			UpdateKind       string `json:"update_kind"`
+			ProfilesToUpdate int    `json:"profiles_to_update"`
+		} `json:"components"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Components) != 1 || !result.Components[0].CanUpdate || result.Components[0].UpdateKind != "profile" || result.Components[0].ProfilesToUpdate != 1 {
+		t.Fatalf("unexpected AmneziaWG profile update state: %#v", result.Components)
+	}
+}
+
+func testAmneziaWG3Profile(name string, mtu int) string {
+	return fmt.Sprintf("[Interface]\nAddress = 10.8.1.2/32\nMTU = %d\nPrivateKey = private-%s\nHeaderProtectionKey = header-%s\n[Peer]\nPublicKey = server-%s\nPresharedKey = psk-%s\nEndpoint = 192.0.2.1:48692\n", mtu, name, name, name, name)
+}
+
+func TestAmneziaWGProfileRefreshRequiresAdminCSRFAndUpdatesEveryProfile(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, _ := db.Authenticate("admin", "test-password")
+	token, csrfToken, _ := db.CreateSession(account.ID)
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	firstID, _ := db.CreateDevice(groupID, "Phone", "amneziawg", testAmneziaWG3Profile("phone", 1376), "app")
+	secondID, _ := db.CreateDevice(groupID, "Tablet", "amneziawg", testAmneziaWG3Profile("tablet", 1420), "native")
+	xrayID, _ := db.CreateDevice(groupID, "PC", "xray", "vless://unchanged@example")
+	_ = db.SetDeviceCredential(firstID, testAmneziaWG3Profile("phone", 1376), 2, "3.1")
+	_ = db.SetDeviceCredential(secondID, testAmneziaWG3Profile("tablet", 1420), 2, "3.1")
+	calls := 0
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		body := `{"components":[{"id":"amneziawg","installed":true,"external":false,"profile_version":"3.1","profile_generation":3}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	path := "/api/components/amneziawg/profiles"
+
+	request := httptest.NewRequest(http.MethodPost, path, nil)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || calls != 0 {
+		t.Fatalf("unauthenticated refresh status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("CSRF-free refresh status=%d calls=%d", response.Code, calls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	request.Header.Set("X-CSRF-Token", csrfToken)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("authenticated refresh status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
+	}
+	for _, id := range []int64{firstID, secondID} {
+		device, err := db.Device(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(device.Credential, "MTU = 1280") || device.ProfileGeneration != 3 || device.ProtocolVersion != "3.1" {
+			t.Fatalf("profile was not refreshed: %#v", device)
+		}
+		if !strings.Contains(device.Credential, "private-") || !strings.Contains(device.Credential, "PresharedKey = psk-") {
+			t.Fatalf("profile keys were not preserved: %#v", device)
+		}
+	}
+	xray, _ := db.Device(xrayID)
+	if xray.Credential != "vless://unchanged@example" {
+		t.Fatalf("unrelated profile changed: %#v", xray)
+	}
+}
+
+func TestAmneziaWGProfileRefreshRejectsMalformedSetAtomically(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	valid := testAmneziaWG3Profile("phone", 1376)
+	firstID, _ := db.CreateDevice(groupID, "Phone", "amneziawg", valid, "app")
+	secondID, _ := db.CreateDevice(groupID, "Broken", "amneziawg", "[Interface]\nMTU = 1376\n", "app")
+	_ = db.SetDeviceCredential(firstID, valid, 2, "3.1")
+	_ = db.SetDeviceCredential(secondID, "[Interface]\nMTU = 1376\n", 2, "3.1")
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"components":[{"id":"amneziawg","installed":true,"external":false,"profile_version":"3.1","profile_generation":3}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/components/amneziawg/profiles", nil)
+	request.SetPathValue("id", "amneziawg")
+	s.refreshComponentProfiles(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	first, _ := db.Device(firstID)
+	if first.Credential != valid || first.ProfileGeneration != 2 {
+		t.Fatalf("valid profile changed before the malformed set was rejected: %#v", first)
 	}
 }
 
@@ -563,7 +704,7 @@ func TestComponentProfileVersionUpdateRequiresAdminCSRFAndPreservesProfiles(t *t
 	calls := 0
 	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
-		body := `{"components":[{"id":"xray","installed":true,"external":false,"profile_version":"26.3.27"}]}`
+		body := `{"components":[{"id":"xray","installed":true,"external":false,"profile_version":"26.3.27","profile_generation":1}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
@@ -601,7 +742,7 @@ func TestComponentProfileVersionUpdateRequiresAdminCSRFAndPreservesProfiles(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if device.ProtocolVersion != "26.3.27" || device.Credential != "vless://unchanged@example" || device.ProfileGeneration != 0 {
+	if device.ProtocolVersion != "26.3.27" || device.Credential != "vless://unchanged@example" || device.ProfileGeneration != 1 {
 		t.Fatalf("profile material changed unexpectedly: %#v", device)
 	}
 }

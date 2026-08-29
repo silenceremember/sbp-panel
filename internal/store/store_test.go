@@ -97,7 +97,7 @@ func TestUpdateDeviceProfilesIsAtomic(t *testing.T) {
 	}
 }
 
-func TestSetProfilesVersionUpdatesOnlyTheSelectedMethod(t *testing.T) {
+func TestSetProfilesRevisionUpdatesOnlyTheSelectedMethod(t *testing.T) {
 	s := testStore(t)
 	groupID, err := s.CreateGroup("Family", 30)
 	if err != nil {
@@ -111,10 +111,10 @@ func TestSetProfilesVersionUpdatesOnlyTheSelectedMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count, err := s.CountProfilesNotAtVersion("xray", "26.3.27"); err != nil || count != 1 {
+	if count, err := s.CountProfilesNotAtRevision("xray", "26.3.27", 1); err != nil || count != 1 {
 		t.Fatalf("initial mismatch count=%d err=%v", count, err)
 	}
-	updated, err := s.SetProfilesVersion("xray", "26.3.27")
+	updated, err := s.SetProfilesRevision("xray", "26.3.27", 1)
 	if err != nil || updated != 1 {
 		t.Fatalf("updated=%d err=%v", updated, err)
 	}
@@ -126,13 +126,13 @@ func TestSetProfilesVersionUpdatesOnlyTheSelectedMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if xray.ProtocolVersion != "26.3.27" || xray.Credential != "vless://xray@example" || xray.ProfileGeneration != 0 {
+	if xray.ProtocolVersion != "26.3.27" || xray.Credential != "vless://xray@example" || xray.ProfileGeneration != 1 {
 		t.Fatalf("Xray profile material changed unexpectedly: %#v", xray)
 	}
 	if bypass.ProtocolVersion != "" || bypass.Credential != "wbstream://room" {
 		t.Fatalf("unrelated profile changed: %#v", bypass)
 	}
-	if updated, err := s.SetProfilesVersion("xray", "26.3.27"); err != nil || updated != 0 {
+	if updated, err := s.SetProfilesRevision("xray", "26.3.27", 1); err != nil || updated != 0 {
 		t.Fatalf("idempotent update=%d err=%v", updated, err)
 	}
 }

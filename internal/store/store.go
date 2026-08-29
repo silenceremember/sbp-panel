@@ -674,26 +674,26 @@ func (s *Store) CountDevicesByMethod(method string) (int, error) {
 	return count, err
 }
 
-func (s *Store) CountProfilesNotAtVersion(method, version string) (int, error) {
+func (s *Store) CountProfilesNotAtRevision(method, version string, generation int) (int, error) {
 	method = strings.TrimSpace(method)
 	version = strings.TrimSpace(version)
-	if method == "" || version == "" {
-		return 0, errors.New("profile method and version are required")
+	if method == "" || version == "" || generation < 1 {
+		return 0, errors.New("profile method, version, and generation are required")
 	}
 	var count int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM credentials WHERE protocol=? AND protocol_version<>?`, method, version).Scan(&count)
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM credentials WHERE protocol=? AND (protocol_version<>? OR profile_generation<>?)`, method, version, generation).Scan(&count)
 	return count, err
 }
 
-// SetProfilesVersion records trusted component metadata without rewriting any
+// SetProfilesRevision records trusted component metadata without rewriting any
 // credential material. One UPDATE keeps the complete component scope atomic.
-func (s *Store) SetProfilesVersion(method, version string) (int64, error) {
+func (s *Store) SetProfilesRevision(method, version string, generation int) (int64, error) {
 	method = strings.TrimSpace(method)
 	version = strings.TrimSpace(version)
-	if method == "" || version == "" {
-		return 0, errors.New("profile method and version are required")
+	if method == "" || version == "" || generation < 1 {
+		return 0, errors.New("profile method, version, and generation are required")
 	}
-	result, err := s.DB.Exec(`UPDATE credentials SET protocol_version=? WHERE protocol=? AND protocol_version<>?`, version, method, version)
+	result, err := s.DB.Exec(`UPDATE credentials SET protocol_version=?,profile_generation=? WHERE protocol=? AND (protocol_version<>? OR profile_generation<>?)`, version, generation, method, version, generation)
 	if err != nil {
 		return 0, err
 	}

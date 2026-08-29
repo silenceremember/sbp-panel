@@ -43,6 +43,7 @@ const (
 	attemptWindow               = 15 * time.Minute
 	maxTrackedIPEntries         = 4096
 	maxConcurrentPasswordChecks = 2
+	amneziaWGProfileGeneration  = 3
 )
 
 var managedMethodByComponent = map[string]string{
@@ -129,6 +130,7 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("POST /api/components/{id}/profile-version", admin(s.updateComponentProfileVersion))
 	m.Handle("POST /api/components/amneziawg/update", admin(s.updateAmneziaWGComponent))
 	m.Handle("GET /api/components/amneziawg/update", admin(s.updateAmneziaWGComponent))
+	m.Handle("POST /api/components/{id}/profiles", admin(s.refreshComponentProfiles))
 	m.Handle("DELETE /api/components/{id}", admin(s.uninstallComponent))
 	m.Handle("DELETE /api/components/{id}/external", admin(s.removeExternalComponent))
 	m.Handle("GET /api/components/{id}/install", auth(s.installStatus))
@@ -1275,20 +1277,27 @@ func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
 			}
 			profileVersion, _ := component["profile_version"].(string)
 			profileVersion = strings.TrimSpace(profileVersion)
+			profileGenerationValue, _ := component["profile_generation"].(float64)
+			profileGeneration := int(profileGenerationValue)
 			installed, _ := component["installed"].(bool)
 			external, _ := component["external"].(bool)
 			canUpgrade, _ := component["can_update"].(bool)
 			if canUpgrade {
 				component["update_kind"] = "upgrade"
-			} else if installed && !external && profileVersion != "" {
-				count, err := s.db.CountProfilesNotAtVersion(method, profileVersion)
+			} else if installed && !external && profileVersion != "" && profileGeneration > 0 {
+				count, err := s.db.CountProfilesNotAtRevision(method, profileVersion, profileGeneration)
 				if err != nil {
 					fail(w, http.StatusInternalServerError, fmt.Errorf("inspect %s profile versions: %w", method, err))
 					return
 				}
 				if count > 0 {
 					component["can_update"] = true
-					component["update_kind"] = "metadata"
+					id, _ := component["id"].(string)
+					if _, ok := componentProfileRefreshers[id]; ok {
+						component["update_kind"] = "profile"
+					} else {
+						component["update_kind"] = "metadata"
+					}
 					component["profiles_to_update"] = count
 				}
 			}
@@ -1444,10 +1453,11 @@ func (s *server) installStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type managedComponentProfileState struct {
-	ID             string `json:"id"`
-	Installed      bool   `json:"installed"`
-	External       bool   `json:"external"`
-	ProfileVersion string `json:"profile_version"`
+	ID                string `json:"id"`
+	Installed         bool   `json:"installed"`
+	External          bool   `json:"external"`
+	ProfileVersion    string `json:"profile_version"`
+	ProfileGeneration int    `json:"profile_generation"`
 }
 
 func (s *server) componentProfileState(id string) (managedComponentProfileState, error) {
@@ -1489,19 +1499,159 @@ func (s *server) updateComponentProfileVersion(w http.ResponseWriter, r *http.Re
 		return
 	}
 	version := strings.TrimSpace(component.ProfileVersion)
-	if !component.Installed || component.External || version == "" {
+	if !component.Installed || component.External || version == "" || component.ProfileGeneration < 1 {
 		fail(w, http.StatusConflict, errors.New("the managed component is not installed or has no profile version"))
 		return
 	}
-	updated, err := s.db.SetProfilesVersion(method, version)
+	updated, err := s.db.SetProfilesRevision(method, version, component.ProfileGeneration)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, fmt.Errorf("record %s profile version: %w", method, err))
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	jsonOut(w, http.StatusOK, map[string]any{
-		"ok": true, "component_id": id, "protocol_version": version, "updated_profiles": updated,
-		"output": fmt.Sprintf("Assigned version %s to %d %s device(s). Connection profiles and keys were not changed.", version, updated, method),
+		"ok": true, "component_id": id, "protocol_version": version, "profile_generation": component.ProfileGeneration, "updated_profiles": updated,
+		"output": fmt.Sprintf("Assigned profile revision %s/%d to %d %s device(s). Connection profiles and keys were not changed.", version, component.ProfileGeneration, updated, method),
+	})
+}
+
+func profileConfigValue(body, section, key string) string {
+	current := ""
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			current = trimmed
+			continue
+		}
+		name, value, found := strings.Cut(trimmed, "=")
+		if current == section && found && strings.EqualFold(strings.TrimSpace(name), key) {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func refreshAmneziaWGProfileMTU(credential string) (string, error) {
+	lines := strings.Split(strings.ReplaceAll(credential, "\r\n", "\n"), "\n")
+	result := make([]string, 0, len(lines)+1)
+	inInterface := false
+	interfaceSeen := false
+	mtuSeen := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if inInterface && !mtuSeen {
+				result = append(result, "MTU = 1280")
+				mtuSeen = true
+			}
+			inInterface = trimmed == "[Interface]"
+			if inInterface {
+				if interfaceSeen {
+					return "", errors.New("AmneziaWG profile contains duplicate Interface sections")
+				}
+				interfaceSeen = true
+			}
+			result = append(result, line)
+			continue
+		}
+		if inInterface {
+			name, _, found := strings.Cut(trimmed, "=")
+			if found && strings.EqualFold(strings.TrimSpace(name), "MTU") {
+				if mtuSeen {
+					return "", errors.New("AmneziaWG profile contains duplicate MTU values")
+				}
+				result = append(result, "MTU = 1280")
+				mtuSeen = true
+				continue
+			}
+		}
+		result = append(result, line)
+	}
+	if inInterface && !mtuSeen {
+		result = append(result, "MTU = 1280")
+	}
+	updated := strings.Join(result, "\n")
+	for _, required := range []struct {
+		section string
+		key     string
+	}{
+		{section: "[Interface]", key: "Address"},
+		{section: "[Interface]", key: "PrivateKey"},
+		{section: "[Interface]", key: "HeaderProtectionKey"},
+		{section: "[Peer]", key: "PublicKey"},
+		{section: "[Peer]", key: "PresharedKey"},
+		{section: "[Peer]", key: "Endpoint"},
+	} {
+		if profileConfigValue(updated, required.section, required.key) == "" {
+			return "", errors.New("stored AmneziaWG 3.1 profile is incomplete")
+		}
+	}
+	return updated, nil
+}
+
+type componentProfileRefresher struct {
+	method    string
+	transform func(string) (string, error)
+	result    func(int) string
+}
+
+var componentProfileRefreshers = map[string]componentProfileRefresher{
+	"amneziawg": {
+		method:    "amneziawg",
+		transform: refreshAmneziaWGProfileMTU,
+		result: func(count int) string {
+			return fmt.Sprintf("Refreshed %d AmneziaWG profile(s) with MTU 1280. Server keys, peers, and container state were not changed.", count)
+		},
+	},
+}
+
+func (s *server) refreshComponentProfiles(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	id := strings.TrimSpace(r.PathValue("id"))
+	refresher, ok := componentProfileRefreshers[id]
+	if !ok {
+		fail(w, http.StatusBadRequest, errors.New("this component does not support profile refreshes"))
+		return
+	}
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
+	component, err := s.componentProfileState(id)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err)
+		return
+	}
+	if !component.Installed || component.External || strings.TrimSpace(component.ProfileVersion) == "" || component.ProfileGeneration < 1 {
+		fail(w, http.StatusConflict, errors.New("the managed component is not installed or has no profile revision"))
+		return
+	}
+	devices, err := s.db.ListAllDevices()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	updates := make([]store.DeviceProfileUpdate, 0)
+	for _, device := range devices {
+		if device.Method != refresher.method {
+			continue
+		}
+		credential, err := refresher.transform(device.Credential)
+		if err != nil {
+			fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: %w", device.Name, err))
+			return
+		}
+		updates = append(updates, store.DeviceProfileUpdate{
+			DeviceID: device.ID, Name: device.Name, Credential: credential,
+			ProfileGeneration: component.ProfileGeneration, ProtocolVersion: component.ProfileVersion,
+		})
+	}
+	if err := s.db.UpdateDeviceProfiles(updates); err != nil {
+		fail(w, http.StatusInternalServerError, fmt.Errorf("publish refreshed %s profiles: %w", refresher.method, err))
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{
+		"ok": true, "component_id": id, "protocol_version": component.ProfileVersion,
+		"profile_generation": component.ProfileGeneration, "updated_profiles": len(updates),
+		"output": refresher.result(len(updates)),
 	})
 }
 
@@ -1678,7 +1828,7 @@ func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request
 		device, ok := currentByID[profile.DeviceID]
 		expected, requestedOK := requested[profile.DeviceID]
 		active := device.Enabled && activeGroups[device.GroupID]
-		if !ok || !requestedOK || expected.Name != device.Name || expected.Active != active || seen[profile.DeviceID] || strings.TrimSpace(profile.Credential) == "" || profile.ProfileGeneration != 2 || profile.ProtocolVersion != "3.1" {
+		if !ok || !requestedOK || expected.Name != device.Name || expected.Active != active || seen[profile.DeviceID] || strings.TrimSpace(profile.Credential) == "" || profile.ProfileGeneration != amneziaWGProfileGeneration || profile.ProtocolVersion != "3.1" {
 			rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
 			fail(w, http.StatusBadGateway, errors.Join(errors.New("agent returned an incomplete AmneziaWG profile set"), rollbackErr))
 			return
