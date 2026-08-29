@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/silenceremember/sbp-panel/internal/store"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -452,7 +454,7 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		t.Fatal("REALITY target port does not use the spinner-free numeric text control")
 	}
 	stylesheet := readAsset("/app.css")
-	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "flex: 0 0 94px", "body.dialog-open::before", "z-index: 910"} {
+	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "flex: 0 0 94px", "body.dialog-open::before", "z-index: 910", "grid-template-columns: 320px", "image-rendering: pixelated"} {
 		if !strings.Contains(stylesheet, expected) {
 			t.Fatalf("dashboard stylesheet is missing %q", expected)
 		}
@@ -1165,6 +1167,84 @@ func TestAmneziaAppCredentialRoundTrip(t *testing.T) {
 	_ = zr.Close()
 	if err != nil || string(decoded) != native {
 		t.Fatalf("round trip failed: %q %v", decoded, err)
+	}
+}
+
+func TestCredentialQRUsesNativeAWGAndDirectXrayPayloads(t *testing.T) {
+	native := "[Interface]\nMTU = 1280\nPrivateKey = secret\nHeaderProtectionKey = header\n[Peer]\nPublicKey = server\nEndpoint = 192.0.2.1:443\n"
+	devices := []store.Device{
+		{Method: "amneziawg", Format: "app", Credential: native},
+		{Method: "amneziawg", Format: "native", Credential: native},
+		{Method: "xray", Credential: "vless://device-uuid@example.com:443?security=reality&type=tcp"},
+		{Method: "xray-xhttp", Credential: "vless://device-uuid@example.com:28443?security=reality&type=xhttp&path=%2Fsecret"},
+	}
+	for _, device := range devices {
+		got, err := credentialQR(device)
+		if err != nil {
+			t.Fatalf("%s QR: %v", device.Method, err)
+		}
+		expectedCode, err := qrcode.New(device.Credential, qrcode.Low)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected, err := expectedCode.PNG(-8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, expected) {
+			t.Fatalf("%s QR does not contain the stored native credential", device.Method)
+		}
+		config, err := png.DecodeConfig(bytes.NewReader(got))
+		if err != nil || config.Width != config.Height || config.Width%8 != 0 || config.Width < 200 {
+			t.Fatalf("%s QR dimensions=%dx%d err=%v", device.Method, config.Width, config.Height, err)
+		}
+		if device.Method == "amneziawg" && device.Format == "app" {
+			appText := displayCredential(device)
+			if appText == device.Credential || !strings.HasPrefix(appText, "vpn://") {
+				t.Fatalf("app Copy payload was not kept separate from native QR: %q", appText)
+			}
+		}
+	}
+}
+
+func TestDeviceQRRequiresAuthenticationAndReturnsNativeAmneziaProfile(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, _ := db.Authenticate("admin", "test-password")
+	token, _, _ := db.CreateSession(account.ID)
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	native := "[Interface]\nAddress = 10.8.1.2/32\nPrivateKey = secret\nHeaderProtectionKey = header\n[Peer]\nPublicKey = server\nEndpoint = 192.0.2.1:443\n"
+	deviceID, _ := db.CreateDevice(groupID, "Phone", "amneziawg", native, "app")
+	s := &server{db: db, tries: map[string]attempt{}, checks: map[string]attempt{}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	path := fmt.Sprintf("/api/devices/%d/qr", deviceID)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated QR status=%d", response.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("authenticated QR status=%d headers=%v body=%q", response.Code, response.Header(), response.Body.String())
+	}
+	expected, err := credentialQR(store.Device{Method: "amneziawg", Format: "app", Credential: native})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(response.Body.Bytes(), expected) {
+		t.Fatal("QR endpoint encoded the vpn:// Copy payload instead of the native Amnezia profile")
 	}
 }
 

@@ -1006,7 +1006,7 @@ func (s *server) deviceQR(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, errors.New("this device does not have a credential yet"))
 		return
 	}
-	png, err := qrcode.Encode(displayCredential(d), qrcode.Medium, 320)
+	png, err := credentialQR(d)
 	if err != nil {
 		fail(w, 500, err)
 		return
@@ -1014,6 +1014,19 @@ func (s *server) deviceQR(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(png)
+}
+
+func credentialQR(d store.Device) ([]byte, error) {
+	// AmneziaVPN's QR path recognizes native AWG configuration text directly,
+	// while vpn:// is handled by its text/file import path. Keep Copy in the
+	// requested app format, but encode the stored native profile in the QR.
+	// Low recovery and an integer module scale match the upstream clients and
+	// avoid dense profiles being blurred by a fixed-size raster.
+	code, err := qrcode.New(d.Credential, qrcode.Low)
+	if err != nil {
+		return nil, err
+	}
+	return code.PNG(-8)
 }
 
 func (s *server) deviceCredential(w http.ResponseWriter, r *http.Request) {

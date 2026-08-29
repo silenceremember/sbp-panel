@@ -3,6 +3,11 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.5.1] - 2026-08-29
+
+- Fixed AmneziaWG QR import by encoding the native profile expected by its client while keeping the existing `vpn://` clipboard format.
+- Made credential QR codes larger and sharper for more reliable scanning.
+
 ## [1.5.0] - 2026-08-29
 
 - Replaced metadata-only Xray updates with an atomic global refresh of every TCP or XHTTP link while preserving UUIDs and the running containers.

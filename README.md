@@ -108,7 +108,7 @@ https://YOUR_SERVER_IP:9443
 2. Install Network tuning, Docker, and the VPN methods you need. Upload the authorized cookie JSON from **Settings** for each required routing component.
 3. Create a group and choose an expiration date or unlimited access.
 4. Add a device and select its connection method.
-5. Copy the profile or scan its QR code and import it into a client.
+5. Copy the profile or scan its QR code and import it into a client. AmneziaWG QR codes use the native configuration accepted by the AmneziaVPN and AmneziaWG scanners; the Copy action keeps the selected text format.
 
 Profiles use the readable name `SBP · Group name · Device name`. Each profile also records its protocol version. **Edit** changes the device name. Recreate a device when it needs a newly issued profile.
 
