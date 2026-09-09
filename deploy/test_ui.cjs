@@ -4,6 +4,14 @@ const vm = require('node:vm');
 const {test} = require('node:test');
 const source = fs.readFileSync('internal/panel/web/app.js', 'utf8');
 const restoreSource = source.slice(source.indexOf('async function restoreConfiguration('), source.indexOf('function setupUpdater()'));
+const suggestName = vm.runInNewContext(source.slice(source.indexOf('function suggestedDeviceName('), source.indexOf('function deviceDialog(')) + ';suggestedDeviceName');
+
+test('connection names use country, group and short protocol with case-insensitive suffixes', () => {
+  const group = {id:1,name:'Admin'};
+  const devices = [{group_id:1,name:'Ireland - Admin - Amnezia'}, {group_id:1,name:'ireland - admin - amnezia2'}, {group_id:2,name:'Ireland - Admin - Xray'}];
+  assert.equal(suggestName('Ireland',group,'amneziawg-native',devices),'Ireland - Admin - Amnezia3');
+  for (const [method,label] of [['xray','Xray'],['xray-xhttp','XHTTP'],['bypass-wb','WB'],['bypass-vk','VK']]) assert.equal(suggestName('Ireland',group,method,devices),`Ireland - Admin - ${label}`);
+});
 
 function fixture(external = false, failInstall = false) {
   const calls = [];

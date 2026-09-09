@@ -99,6 +99,7 @@ func Run(configPath string) error {
 	}}
 	s := &server{cfg: c, db: db, agent: &http.Client{Transport: transport, Timeout: 5 * time.Minute}, tries: map[string]attempt{}, checks: map[string]attempt{}}
 	go s.accessLoop()
+	go s.detectServerCountry()
 	mux := http.NewServeMux()
 	s.routes(mux)
 	h := securityHeaders(mux)
@@ -469,7 +470,8 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err)
 		return
 	}
-	jsonOut(w, 200, map[string]any{"ok": true, "account": r.Context().Value(accountKey), "csrf": r.Context().Value(csrfKey), "groups": groups, "devices": devices, "server_url": serverURL, "version": buildinfo.Version, "repository": buildinfo.RepositoryURL()})
+	country, _ := s.db.Setting("server_country")
+	jsonOut(w, 200, map[string]any{"ok": true, "account": r.Context().Value(accountKey), "csrf": r.Context().Value(csrfKey), "groups": groups, "devices": devices, "server_url": serverURL, "server_country": country, "version": buildinfo.Version, "repository": buildinfo.RepositoryURL()})
 }
 
 func groupAccessEnabled(group store.Group) bool {
@@ -533,7 +535,10 @@ func (s *server) reconcileGroupAccessLocked(groupID int64) error {
 }
 
 func (s *server) updateServerURL(w http.ResponseWriter, r *http.Request) {
-	var in struct{ URL string }
+	var in struct {
+		URL     string
+		Country *string
+	}
 	if err := decode(r, &in); err != nil {
 		fail(w, 400, err)
 		return
@@ -550,11 +555,33 @@ func (s *server) updateServerURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.db.SetSetting("server_url", in.URL); err != nil {
+	settings := map[string]string{"server_url": in.URL}
+	if in.Country != nil {
+		country := strings.TrimSpace(*in.Country)
+		if len(country) > 80 || strings.ContainsAny(country, "\r\n") {
+			fail(w, 400, errors.New("enter a country name up to 80 characters"))
+			return
+		}
+		settings["server_country"] = country
+	}
+	tx, err := s.db.DB.Begin()
+	if err != nil {
 		fail(w, 500, err)
 		return
 	}
-	jsonOut(w, 200, map[string]any{"ok": true, "server_url": in.URL})
+	defer tx.Rollback()
+	for key, value := range settings {
+		if _, err := tx.Exec(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
+			fail(w, 500, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	country, _ := s.db.Setting("server_country")
+	jsonOut(w, 200, map[string]any{"ok": true, "server_url": in.URL, "server_country": country})
 }
 func (s *server) createGroup(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -808,11 +835,7 @@ type renderedProfile struct {
 }
 
 func (s *server) provisionCredential(deviceID, groupID int64, name, method string) (renderedProfile, error) {
-	group, err := s.db.Group(groupID)
-	if err != nil {
-		return renderedProfile{}, fmt.Errorf("load credential group: %w", err)
-	}
-	profileName := managedProfileName(group.Name, name)
+	profileName := strings.TrimSpace(name)
 	payload, _ := json.Marshal(map[string]any{"name": profileName, "method": method, "group_id": groupID, "device_id": deviceID})
 	req, _ := http.NewRequest("POST", "http://unix/v1/credentials", strings.NewReader(string(payload)))
 	req.Header.Set("Content-Type", "application/json")
@@ -836,10 +859,6 @@ func (s *server) provisionCredential(deviceID, groupID int64, name, method strin
 		return renderedProfile{}, errors.New("agent returned incomplete profile metadata")
 	}
 	return provisioned.renderedProfile, nil
-}
-
-func managedProfileName(groupName, deviceName string) string {
-	return fmt.Sprintf("SBP · %s · %s", strings.TrimSpace(groupName), strings.TrimSpace(deviceName))
 }
 
 func (s *server) renderCredential(name, method, credential string) (renderedProfile, error) {
@@ -939,19 +958,21 @@ func (s *server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, errors.New("name is required"))
 		return
 	}
-	if in.Fingerprint != nil && (current.Method == "xray" || current.Method == "xray-xhttp") {
-		credential, err := withXrayFingerprint(current.Credential, *in.Fingerprint)
+	if current.Method == "xray" || current.Method == "xray-xhttp" {
+		credential := current.Credential
+		if in.Fingerprint != nil {
+			credential, err = withXrayFingerprint(credential, *in.Fingerprint)
+			if err != nil {
+				fail(w, 400, err)
+				return
+			}
+		}
+		link, err := url.Parse(credential)
 		if err != nil {
 			fail(w, 400, err)
 			return
 		}
-		group, err := s.db.Group(current.GroupID)
-		if err != nil {
-			fail(w, 500, err)
-			return
-		}
-		link, _ := url.Parse(credential)
-		link.Fragment = managedProfileName(group.Name, in.Name)
+		link.Fragment = strings.TrimSpace(in.Name)
 		err = s.db.UpdateDeviceProfiles([]store.DeviceProfileUpdate{{DeviceID: id, Name: in.Name, Credential: link.String(), ProfileGeneration: current.ProfileGeneration, ProtocolVersion: current.ProtocolVersion}})
 		if err != nil {
 			fail(w, 400, err)
@@ -1713,15 +1734,6 @@ func (s *server) refreshComponentProfiles(w http.ResponseWriter, r *http.Request
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	groups, err := s.db.ListGroups()
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err)
-		return
-	}
-	groupNames := make(map[int64]string, len(groups))
-	for _, group := range groups {
-		groupNames[group.ID] = group.Name
-	}
 	updates := make([]store.DeviceProfileUpdate, 0)
 	for _, device := range devices {
 		if device.Method != refresher.method {
@@ -1729,12 +1741,7 @@ func (s *server) refreshComponentProfiles(w http.ResponseWriter, r *http.Request
 		}
 		credential := ""
 		if refresher.agentRender {
-			groupName, ok := groupNames[device.GroupID]
-			if !ok {
-				fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: group is missing", device.Name))
-				return
-			}
-			profile, err := s.renderCredential(managedProfileName(groupName, device.Name), device.Method, device.Credential)
+			profile, err := s.renderCredential(device.Name, device.Method, device.Credential)
 			if err != nil {
 				fail(w, http.StatusConflict, fmt.Errorf("refresh profile for %s: %w", device.Name, err))
 				return
@@ -2114,6 +2121,10 @@ func (s *server) componentSettings(w http.ResponseWriter, r *http.Request) {
 		body, err = io.ReadAll(io.LimitReader(r.Body, 32<<10+1))
 		if err != nil || len(body) == 0 || len(body) > 32<<10 {
 			fail(w, http.StatusBadRequest, errors.New("invalid component settings request size"))
+			return
+		}
+		if id != "tweaks" {
+			s.saveProtocolSettings(w, id, body)
 			return
 		}
 	}

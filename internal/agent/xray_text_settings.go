@@ -29,7 +29,7 @@ func xrayTextSettings(method string, content *string) (componentTextSettingsStat
 	defaultJSON, _ := json.MarshalIndent(defaults, "", "  ")
 	_, installed := componentOwnership(method)
 	return componentTextSettingsState{ComponentID: method, Content: string(currentJSON), DefaultContent: string(defaultJSON), Installed: installed, Editable: true,
-		Notice: "REALITY target and accepted server names are server settings. Default SNI and fingerprint affect newly generated profiles. Fingerprint can also be changed in the client. Refresh existing profiles after changing the default SNI."}, nil
+		Notice: "Saving REALITY target and server names applies server settings and refreshes existing profiles automatically. Default fingerprint applies to new profiles; existing profiles keep their fingerprint. Import updated profiles after changing SNI."}, nil
 }
 
 func parseXrayTextSettings(content string) (xrayRealitySNIState, error) {

@@ -39,15 +39,6 @@ var amneziaWGSettingOrder = []string{
 	"HeaderProtectionKey", "RandomTrailers", "DisableCookies",
 }
 
-func defaultAmneziaWGServerSettingsContent() string {
-	var result strings.Builder
-	for _, key := range amneziaWGSettingOrder {
-		result.WriteString(key)
-		result.WriteString(" = auto\n")
-	}
-	return result.String()
-}
-
 func canonicalAmneziaWGServerSettings(settings amneziaWGServerSettings) string {
 	base := fmt.Sprintf(
 		"Jc = %d\nJmin = %d\nJmax = %d\nS1 = %d\nS2 = %d\nS3 = %d\nS4 = %d\nH1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n",
@@ -62,7 +53,7 @@ func amneziaWGClientSettings(settings amneziaWGServerSettings) string {
 }
 
 func amneziaWGSettingsFromGenerated(generated generatedAmneziaWGSettings) (amneziaWGServerSettings, error) {
-	return parseAmneziaWGServerSettings(generated.server, nil)
+	return parseAmneziaWGServerSettings(generated.server)
 }
 
 func parseAmneziaWGHeaderRange(value string) (uint32, uint32, error) {
@@ -126,11 +117,8 @@ func validateAmneziaWGServerSettings(settings amneziaWGServerSettings) error {
 
 func amneziaWGToggle(value string) bool { return value == "on" || value == "off" }
 
-func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSettings) (amneziaWGServerSettings, error) {
+func parseAmneziaWGServerSettings(content string) (amneziaWGServerSettings, error) {
 	settings := amneziaWGServerSettings{}
-	if defaults != nil {
-		settings = *defaults
-	}
 	seen := map[string]bool{}
 	for lineNumber, raw := range strings.Split(content, "\n") {
 		line := strings.TrimSpace(raw)
@@ -156,12 +144,6 @@ func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSetti
 			return amneziaWGServerSettings{}, fmt.Errorf("line %d duplicates %s", lineNumber+1, key)
 		}
 		seen[key] = true
-		if value == "auto" {
-			if defaults == nil {
-				return amneziaWGServerSettings{}, fmt.Errorf("line %d cannot use auto in resolved settings", lineNumber+1)
-			}
-			continue
-		}
 		if key == "H1" || key == "H2" || key == "H3" || key == "H4" {
 			switch key {
 			case "H1":
@@ -207,11 +189,9 @@ func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSetti
 			settings.S4 = number
 		}
 	}
-	if defaults == nil {
-		for _, key := range amneziaWGSettingOrder {
-			if !seen[key] {
-				return amneziaWGServerSettings{}, fmt.Errorf("%s is missing", key)
-			}
+	for _, key := range amneziaWGSettingOrder {
+		if !seen[key] {
+			return amneziaWGServerSettings{}, fmt.Errorf("%s is missing", key)
 		}
 	}
 	if err := validateAmneziaWGServerSettings(settings); err != nil {
@@ -237,7 +217,7 @@ func loadDesiredAmneziaWGServerSettings() (amneziaWGServerSettings, bool, error)
 		settings, err := generatedAmneziaWGServerSettings()
 		return settings, false, err
 	}
-	settings, err := parseAmneziaWGServerSettings(string(body), nil)
+	settings, err := parseAmneziaWGServerSettings(string(body))
 	return settings, true, err
 }
 
@@ -264,10 +244,16 @@ func amneziaWGServerSettingsFromConfiguration(configuration string) (amneziaWGSe
 			}
 		}
 	}
-	return parseAmneziaWGServerSettings(selected.String(), nil)
+	return parseAmneziaWGServerSettings(selected.String())
 }
 
 func amneziaWGSettingsState() (componentTextSettingsState, error) {
+	componentSettingsMu.Lock()
+	defer componentSettingsMu.Unlock()
+	return amneziaWGSettingsStateLocked()
+}
+
+func amneziaWGSettingsStateLocked() (componentTextSettingsState, error) {
 	_, installed := componentOwnership("amneziawg")
 	settings, desiredExists, err := loadDesiredAmneziaWGServerSettings()
 	if err != nil {
@@ -282,16 +268,19 @@ func amneziaWGSettingsState() (componentTextSettingsState, error) {
 	}
 	content := canonicalAmneziaWGServerSettings(settings)
 	if !installed && !desiredExists {
-		content = defaultAmneziaWGServerSettingsContent()
+		if err := writeComponentSettings("amneziawg", []byte(content)); err != nil {
+			return componentTextSettingsState{}, err
+		}
 	}
+	defaults := defaultAmneziaWGSettings(settings.HeaderProtectionKey)
 	state := componentTextSettingsState{
 		ComponentID:    "amneziawg",
 		Content:        content,
-		DefaultContent: defaultAmneziaWGServerSettingsContent(),
+		DefaultContent: canonicalAmneziaWGServerSettings(defaults),
 		Installed:      installed,
 		Editable:       true,
 		Notice:         "These are global desired server settings. They remain available before installation, are used by a later install, and can be saved again after installation.",
-		Warning:        "Changing these server obfuscation values requires matching device profiles. SBP refuses a change while any AmneziaWG peer exists.",
+		Warning:        "Saving automatically refreshes every AmneziaWG profile. Import the updated profiles in your apps after changing these values. Device keys, names and access dates are preserved.",
 	}
 	if !installed {
 		containers, inspectErr := dockerCommand("ps", "-a", "--format", "{{.Names}}")
@@ -304,7 +293,7 @@ func amneziaWGSettingsState() (componentTextSettingsState, error) {
 }
 
 func replaceAmneziaWGServerSettings(configuration string, settings amneziaWGServerSettings) ([]byte, error) {
-	if _, err := parseAmneziaWGServerSettings(canonicalAmneziaWGServerSettings(settings), nil); err != nil {
+	if _, err := parseAmneziaWGServerSettings(canonicalAmneziaWGServerSettings(settings)); err != nil {
 		return nil, err
 	}
 	lines := strings.Split(configuration, "\n")
@@ -334,23 +323,6 @@ func replaceAmneziaWGServerSettings(configuration string, settings amneziaWGServ
 		return nil, errors.New("the managed AmneziaWG server settings are missing")
 	}
 	return []byte(strings.Join(result, "\n")), nil
-}
-
-func amneziaWGConfigurationHasPeers(configuration string) bool {
-	for _, line := range strings.Split(configuration, "\n") {
-		if strings.TrimSpace(line) == "[Peer]" {
-			return true
-		}
-	}
-	return false
-}
-
-func parseAmneziaWGServerSettingsWithDefaults(content string) (amneziaWGServerSettings, error) {
-	defaults, err := generatedAmneziaWGServerSettings()
-	if err != nil {
-		return amneziaWGServerSettings{}, err
-	}
-	return parseAmneziaWGServerSettings(content, &defaults)
 }
 
 func amneziaWGClientOnlySettings(shared string) string {
@@ -399,9 +371,6 @@ func applyInstalledAmneziaWGSettings(settings amneziaWGServerSettings, ops amnez
 	if canonicalAmneziaWGServerSettings(current) == canonical {
 		return false, nil
 	}
-	if amneziaWGConfigurationHasPeers(string(previousConfig)) {
-		return false, errors.New("remove all AmneziaWG devices before changing server obfuscation settings")
-	}
 	previousMetadata, err := ops.readMetadata()
 	if err != nil {
 		return false, err
@@ -436,13 +405,18 @@ func applyInstalledAmneziaWGSettings(settings amneziaWGServerSettings, ops amnez
 }
 
 func saveAmneziaWGSettings(content string) (componentTextSettingsState, error) {
-	settings, err := parseAmneziaWGServerSettingsWithDefaults(content)
+	settings, err := parseAmneziaWGServerSettings(content)
 	if err != nil {
 		return componentTextSettingsState{}, err
 	}
 	canonical := []byte(canonicalAmneziaWGServerSettings(settings))
 	componentSettingsMu.Lock()
 	defer componentSettingsMu.Unlock()
+	amneziaWGCredentialMu.Lock()
+	defer amneziaWGCredentialMu.Unlock()
+	if err := ensureAmneziaWGComponentUpdateIdle(); err != nil {
+		return componentTextSettingsState{}, err
+	}
 	previousDesired, desiredExisted, err := readComponentSettings("amneziawg")
 	if err != nil {
 		return componentTextSettingsState{}, err
@@ -451,10 +425,21 @@ func saveAmneziaWGSettings(content string) (componentTextSettingsState, error) {
 		return componentTextSettingsState{}, err
 	}
 	if _, installed := componentOwnership("amneziawg"); !installed {
-		return amneziaWGSettingsState()
+		return amneziaWGSettingsStateLocked()
 	}
 	if _, err := applyInstalledAmneziaWGSettings(settings, defaultAmneziaWGSettingsApplyOps()); err != nil {
 		return componentTextSettingsState{}, errors.Join(err, restoreComponentSettings("amneziawg", previousDesired, desiredExisted))
 	}
-	return amneziaWGSettingsState()
+	return amneziaWGSettingsStateLocked()
+}
+
+func renderExistingAmneziaWGCredential(credential string) (string, error) {
+	amneziaWGCredentialMu.Lock()
+	defer amneziaWGCredentialMu.Unlock()
+	settings, err := readInstalledAmneziaWGServerSettings()
+	if err != nil {
+		return "", err
+	}
+	updated, err := replaceAmneziaWGServerSettings(credential, settings)
+	return string(updated), err
 }

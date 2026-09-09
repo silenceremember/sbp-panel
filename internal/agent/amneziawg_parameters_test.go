@@ -13,7 +13,7 @@ func TestNewAmneziaWG3Settings(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		settings, err := parseAmneziaWGServerSettings(generated.server, nil)
+		settings, err := parseAmneziaWGServerSettings(generated.server)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func TestAmneziaWGSettingsRejectUnsafeTrailers(t *testing.T) {
 			t.Fatal("unsafe settings accepted")
 		}
 	}
-	if _, err := parseAmneziaWGServerSettings(strings.Replace(canonicalAmneziaWGServerSettings(defaults), "RandomTrailers = on\n", "", 1), nil); err == nil {
+	if _, err := parseAmneziaWGServerSettings(strings.Replace(canonicalAmneziaWGServerSettings(defaults), "RandomTrailers = on\n", "", 1)); err == nil {
 		t.Fatal("missing required field accepted")
 	}
 }

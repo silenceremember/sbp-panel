@@ -854,7 +854,7 @@ func TestXrayProfileRefreshRequiresAdminCSRFAndPreservesUUID(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 				t.Fatal(err)
 			}
-			if input.Name != "SBP · Family · PC" || input.Method != "xray" || !strings.HasPrefix(input.Credential, "vless://device-uuid@") {
+			if input.Name != "PC" || input.Method != "xray" || !strings.HasPrefix(input.Credential, "vless://device-uuid@") {
 				t.Fatalf("unexpected render request: %#v", input)
 			}
 			body = `{"ok":true,"credential":"vless://device-uuid@current.example:443?security=reality&type=tcp#SBP%20%C2%B7%20Family%20%C2%B7%20PC","profile_generation":1,"protocol_version":"26.3.27"}`
@@ -960,7 +960,6 @@ func TestComponentSettingsForwardingIsScopedAndBounded(t *testing.T) {
 		{name: "read Xray", method: http.MethodGet, id: "xray", wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "read XHTTP", method: http.MethodGet, id: "xray-xhttp", wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "read tuning", method: http.MethodGet, id: "tweaks", wantStatus: http.StatusOK, wantCalls: 1},
-		{name: "save AmneziaWG", method: http.MethodPut, id: "amneziawg", body: `{"content":"Jc = auto\n"}`, wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "unsupported component", method: http.MethodGet, id: "docker", wantStatus: http.StatusBadRequest},
 		{name: "empty mutation", method: http.MethodPut, id: "tweaks", wantStatus: http.StatusBadRequest},
 		{name: "oversized mutation", method: http.MethodPut, id: "tweaks", body: strings.Repeat("x", 32<<10+1), wantStatus: http.StatusBadRequest},
@@ -1257,7 +1256,7 @@ func TestEditDeviceOnlyChangesName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if device.Name != "Tablet" || device.Credential != "vless://unchanged" || device.ProfileGeneration != 0 {
+	if device.Name != "Tablet" || device.Credential != "vless://unchanged#Tablet" || device.ProfileGeneration != 0 {
 		t.Fatalf("Edit changed more than the name: %#v", device)
 	}
 }
@@ -1459,7 +1458,7 @@ func TestCreateDeviceResponseStillIncludesCredential(t *testing.T) {
 	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), credential) {
 		t.Fatalf("create response lost its credential: status=%d body=%q", response.Code, response.Body.String())
 	}
-	if profileName != "SBP · Family · Phone" {
+	if profileName != "Phone" {
 		t.Fatalf("unexpected VPN profile name: %q", profileName)
 	}
 }

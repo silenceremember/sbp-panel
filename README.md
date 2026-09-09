@@ -235,11 +235,27 @@ Native JSON includes that path and keeps Vision flow only on TCP.
 
 Components > Settings uses a JSON editor for each Xray variant. `target` and
 `server_names` configure REALITY; `default_sni` and `fingerprint` control new
-profiles. **Refresh device profiles** applies saved server parameters to existing
-links while keeping each UUID and fingerprint. Users must import changed links.
+profiles. Saving automatically refreshes existing links while keeping each UUID
+and fingerprint. Users must import changed links.
 Fingerprint is also selectable when creating or editing a device and remains
 editable in the client. No SNI or fingerprint guarantees reachability on every
 network; check the target from the actual server and the client's transport.
+
+AmneziaWG settings also refresh all profiles automatically, including disabled
+devices, while keeping keys, names and group expiration dates. Server settings
+are rolled back if rendering or publishing the profiles fails. No manual device
+deletion is needed. Reimport profiles after changing shared obfuscation values.
+The editor displays concrete defaults: Jc 6, Jmin 10, Jmax 50, S1-S4 12,
+H1-H4 1/2/3/4, RandomTrailers off and DisableCookies off. HeaderProtectionKey is
+generated once, displayed explicitly, and retained by Restore defaults.
+The header/padding choices follow the [AWG 3.1 compatibility guidance](https://docs.amnezia.org/documentation/amnezia-wg/).
+
+New names follow `Country - Group - Protocol`, for example
+`Ireland - Admin - Amnezia` and `Ireland - Admin - Amnezia2`. Selecting another
+protocol updates the suggestion until you enter a custom name. Existing names
+are preserved. Country is detected on startup through ipapi.co and cached;
+edit it through the header's server settings if geolocation is unavailable or
+incorrect. The fallback prefix is `Server` until a country is available.
 
 **Configuration** exports one JSON file containing groups, contact names,
 expiration dates, enabled devices, component settings and provider cookies.

@@ -2894,11 +2894,16 @@ func renderCredentialHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	variant, ok := xrayVariantForMethod(in.Method)
-	if !ok || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Credential) == "" {
-		writeError(w, http.StatusBadRequest, errors.New("only existing Xray profiles can be rendered"))
+	if (!ok && in.Method != "amneziawg") || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Credential) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("only existing Xray or AmneziaWG profiles can be rendered"))
 		return
 	}
-	credential, err := renderExistingXrayCredential(variant, in.Name, in.Credential)
+	var credential string
+	if in.Method == "amneziawg" {
+		credential, err = renderExistingAmneziaWGCredential(in.Credential)
+	} else {
+		credential, err = renderExistingXrayCredential(variant, in.Name, in.Credential)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

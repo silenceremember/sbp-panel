@@ -3,6 +3,14 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.6.1] - 2026-09-09
+
+- Saving AmneziaWG obfuscation settings now synchronizes the server and refreshes all device profiles automatically, including suspended devices, without deleting peers or changing keys, names or expiration dates. Reimport changed profiles in client apps.
+- Replaced hidden AWG `auto` values with explicit compatibility defaults and a stable, visible HeaderProtectionKey. Restore defaults keeps the existing header key.
+- Xray and XHTTP settings also refresh stored profiles automatically. Failed profile publication rolls server settings back.
+- New device names follow `Ireland - Admin - Amnezia`, with `Amnezia2`, `Xray2`, `XHTTP2`, etc. for duplicates. Country is detected once from the server IP and can be corrected in Server settings; custom names are preserved.
+- Xray link labels now match the editable device name.
+
 ## [1.6.0] - 2026-09-09
 
 - Added an Amnezia QR option with native Xray JSON, preserving the XHTTP path that Amnezia's VLESS URI importer omits. Standard VLESS QR remains available for other clients.

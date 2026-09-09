@@ -57,7 +57,7 @@ func validateConfigurationSettings(settings map[string]string) error {
 		case "xray", "xray-xhttp":
 			_, err = parseXrayTextSettings(content)
 		case "amneziawg":
-			_, err = parseAmneziaWGServerSettingsWithDefaults(content)
+			_, err = parseAmneziaWGServerSettings(content)
 		case "tweaks":
 			_, err = parseNetworkTuningSettings(content)
 		default:

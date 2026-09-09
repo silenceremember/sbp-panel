@@ -121,12 +121,12 @@ func TestAmneziaWGServerSettingsValidateAndPreserveClientOnlyValues(t *testing.T
 		t.Fatal(err)
 	}
 	canonical := canonicalAmneziaWGServerSettings(settings)
-	parsed, err := parseAmneziaWGServerSettings(canonical, nil)
+	parsed, err := parseAmneziaWGServerSettings(canonical)
 	if err != nil || canonicalAmneziaWGServerSettings(parsed) != canonical {
 		t.Fatalf("round trip=%#v, %v", parsed, err)
 	}
 	bad := strings.Replace(canonical, "H2 = "+settings.H2, "H2 = "+settings.H1, 1)
-	if _, err := parseAmneziaWGServerSettings(bad, nil); err == nil {
+	if _, err := parseAmneziaWGServerSettings(bad); err == nil {
 		t.Fatal("overlapping header ranges were accepted")
 	}
 	shared := canonical + "I1 = client-only\n"
@@ -135,16 +135,37 @@ func TestAmneziaWGServerSettingsValidateAndPreserveClientOnlyValues(t *testing.T
 	}
 }
 
-func TestAmneziaWGAutoAndMissingLinesResolveToValidServerDefaults(t *testing.T) {
-	settings, err := parseAmneziaWGServerSettingsWithDefaults("Jmin = 10\nJmax = 50\nS1 = auto\n")
+func TestAmneziaWGSettingsRequireExplicitValues(t *testing.T) {
+	for _, content := range []string{"Jc = auto\n", "Jmin = 10\nJmax = 50\n"} {
+		if _, err := parseAmneziaWGServerSettings(content); err == nil {
+			t.Fatal("implicit settings accepted")
+		}
+	}
+}
+
+func TestAmneziaWGEditorUsesStableExplicitDefaults(t *testing.T) {
+	isolateComponentSettings(t)
+	first, err := amneziaWGSettingsState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.Jmin != 10 || settings.Jmax != 50 {
-		t.Fatalf("explicit values were not preserved: %#v", settings)
+	second, err := amneziaWGSettingsState()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := validateAmneziaWGServerSettings(settings); err != nil {
-		t.Fatalf("resolved defaults are invalid: %v", err)
+	if first.Content != second.Content || strings.Contains(first.Content, "auto") || strings.Contains(first.DefaultContent, "auto") {
+		t.Fatal("editor hides or regenerates parameters")
+	}
+	current, err := parseAmneziaWGServerSettings(first.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := parseAmneziaWGServerSettings(first.DefaultContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.HeaderProtectionKey != defaults.HeaderProtectionKey || defaults.Jc != 6 || defaults.S4 != 12 || defaults.RandomTrailers != "off" {
+		t.Fatal("incorrect default values or changed header key")
 	}
 }
 
@@ -166,7 +187,7 @@ func TestReplaceAmneziaWGServerSettingsKeepsInterfaceSecretsAndPeers(t *testing.
 	if !strings.Contains(text, "PrivateKey = secret") || !strings.Contains(text, "PublicKey = peer") || !strings.Contains(text, canonicalAmneziaWGServerSettings(newSettings)) {
 		t.Fatalf("candidate=%q", text)
 	}
-	if !amneziaWGConfigurationHasPeers(text) {
+	if !strings.Contains(text, "[Peer]") {
 		t.Fatal("peer detection failed")
 	}
 }
@@ -206,7 +227,7 @@ func TestApplyInstalledAmneziaWGSettingsUpdatesServerAndMetadata(t *testing.T) {
 	}
 }
 
-func TestApplyInstalledAmneziaWGSettingsRefusesPeersAndRollsBackMetadataFailure(t *testing.T) {
+func TestApplyInstalledAmneziaWGSettingsKeepsPeersAndRollsBackMetadataFailure(t *testing.T) {
 	current, err := generatedAmneziaWGServerSettings()
 	if err != nil {
 		t.Fatal(err)
@@ -216,13 +237,19 @@ func TestApplyInstalledAmneziaWGSettingsRefusesPeersAndRollsBackMetadataFailure(
 	base := "[Interface]\nPrivateKey = secret\n" + canonicalAmneziaWGServerSettings(current)
 	applyCalls := 0
 	peerOps := amneziaWGSettingsApplyOps{
-		readServer:      func() ([]byte, error) { return []byte(base + "\n[Peer]\nPublicKey = peer\n"), nil },
-		readMetadata:    func() ([]byte, error) { t.Fatal("peer mutation read metadata"); return nil, nil },
-		applyServer:     func([]byte) error { applyCalls++; return nil },
-		replaceMetadata: func([]byte) error { t.Fatal("peer mutation wrote metadata"); return nil },
+		readServer:   func() ([]byte, error) { return []byte(base + "\n[Peer]\nPublicKey = peer\n"), nil },
+		readMetadata: func() ([]byte, error) { return []byte(`{"shared":"I1 = client-only"}`), nil },
+		applyServer: func(body []byte) error {
+			applyCalls++
+			if !strings.Contains(string(body), "PublicKey = peer") {
+				t.Fatal("peer lost")
+			}
+			return nil
+		},
+		replaceMetadata: func([]byte) error { return nil },
 	}
-	if _, err := applyInstalledAmneziaWGSettings(next, peerOps); err == nil || !strings.Contains(err.Error(), "remove all") || applyCalls != 0 {
-		t.Fatalf("peer refusal calls=%d err=%v", applyCalls, err)
+	if _, err := applyInstalledAmneziaWGSettings(next, peerOps); err != nil || applyCalls != 1 {
+		t.Fatalf("peer update calls=%d err=%v", applyCalls, err)
 	}
 
 	var candidates [][]byte

@@ -781,18 +781,17 @@ function setupServerLink() {
     link.href = state.server_url;
     try { link.textContent = new URL(state.server_url).hostname; } catch { link.textContent = 'Server page'; }
     link.hidden = false;
-    edit.textContent = 'Edit';
   } else {
     link.hidden = true;
-    edit.textContent = 'Add server page';
   }
+  edit.textContent = 'Server settings';
   edit.onclick = () => {
     const generation = ++dialogGeneration;
     const dialog = document.querySelector('#dialog');
     const body = document.querySelector('#dialog-body');
-    document.querySelector('#dialog-title').textContent = 'Server page';
+    document.querySelector('#dialog-title').textContent = 'Server settings';
     setDialogAction('Save');
-    body.innerHTML = `<label>URL<input id="server-url" type="url" placeholder="https://hosting.example/server/123" value="${escapeHTML(state.server_url || '')}"></label><small class="muted">A plain text link to the hosting dashboard or this server page will appear in the header.</small>`;
+    body.innerHTML = `<label>Country<input id="server-country" maxlength="80" placeholder="Ireland" value="${escapeHTML(state.server_country || '')}"></label><small class="muted">Detected from this server's public IP. Correct it here if needed; used for new connection names.</small><label>URL<input id="server-url" type="url" placeholder="https://hosting.example/server/123" value="${escapeHTML(state.server_url || '')}"></label><small class="muted">A link to the hosting dashboard or server page appears in the header.</small>`;
     openDialog(dialog);
     document.querySelector('#dialog-form').onsubmit = async event => {
       if (event.submitter?.value === 'cancel') return;
@@ -800,11 +799,12 @@ function setupServerLink() {
       const submit = event.submitter || document.querySelector('#dialog-ok');
       try {
         await runPendingAction('settings:server-url', submit, 'Saving…', async () => {
-          const value = await api('/api/settings/server-url', {method: 'PUT', body: {URL: body.querySelector('#server-url').value}});
+          const value = await api('/api/settings/server-url', {method: 'PUT', body: {URL: body.querySelector('#server-url').value, Country: body.querySelector('#server-country').value}});
           if (generation === dialogGeneration && dialog.open) dialog.close();
           state.server_url = value.server_url;
+          state.server_country = value.server_country;
           setupServerLink();
-          notify('Server page URL saved.', 'success');
+          notify('Server settings saved.', 'success');
         });
       } catch (e) { notifyError(e); }
     };
@@ -937,6 +937,15 @@ function renderGroups(prefetchedDevices = null) {
   }
 }
 
+function suggestedDeviceName(country, group, method, devices) {
+  const protocol = {'xray':'Xray','xray-xhttp':'XHTTP','amneziawg-app':'Amnezia','amneziawg-native':'Amnezia','amneziawg':'Amnezia','bypass-wb':'WB','bypass-vk':'VK','bypass-dion':'DION','bypass-telemost':'Telemost'}[method];
+  const base = `${country || 'Server'} - ${group.name} - ${protocol}`;
+  const names = new Set(devices.filter(d => d.group_id === group.id).map(d => d.name.toLowerCase()));
+  let name = base;
+  for (let number = 2; names.has(name.toLowerCase()); number++) name = base + number;
+  return name;
+}
+
 function deviceDialog(device) {
   const generation = ++dialogGeneration;
   const dialog = document.querySelector('#dialog');
@@ -948,14 +957,24 @@ function deviceDialog(device) {
     ? `amneziawg-${device.format === 'app' ? 'app' : 'native'}`
     : (device.method || 'xray');
   body.innerHTML = `
-    <label>Name<input id="device-name" value="${escapeHTML(device.name || 'Phone')}" required></label>
+    <label>Name<input id="device-name" value="${escapeHTML(device.name || '')}" required></label>
     <label>Protocol<select id="device-method" ${editing ? 'disabled' : ''}>${DEVICE_METHOD_OPTIONS.map(([id, label]) => `<option value="${id}" ${id === selectedMethod ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
     <label id="fingerprint-field">Fingerprint<select id="device-fingerprint"><option value="">Component default</option>${['chrome','firefox','safari','ios','android','edge','random','randomized'].map(fp => `<option>${fp}</option>`).join('')}</select><small class="muted">Used only to generate the profile and QR code. You can change it in the client app.</small></label>
     ${editing ? '<small class="muted">Protocol and format are bound to the credential. Recreate the device when a new profile is required.</small>' : ''}`;
   const fingerprint = body.querySelector('#device-fingerprint');
+  const name = body.querySelector('#device-name');
+  let suggestion = '';
   const updateFingerprint = () => { body.querySelector('#fingerprint-field').hidden = !['xray', 'xray-xhttp'].includes(body.querySelector('#device-method').value); };
-  body.querySelector('#device-method').onchange = updateFingerprint;
-  updateFingerprint();
+  const updateMethod = () => {
+    updateFingerprint();
+    if (!editing && (!name.value || name.value === suggestion)) {
+      const group = state.groups.find(g => g.id === device.group_id);
+      suggestion = suggestedDeviceName(state.server_country, group, body.querySelector('#device-method').value, state.devices);
+      name.value = suggestion;
+    }
+  };
+  body.querySelector('#device-method').onchange = updateMethod;
+  updateMethod();
   if (editing && ['xray','xray-xhttp'].includes(device.method)) {
     fingerprint.disabled = true;
     api(`/api/devices/${device.id}/credential`).then(value => {
@@ -1361,11 +1380,7 @@ function componentTextSettingsDialog(component) {
       <p class="settings-notice">${escapeHTML(settings?.notice || GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
       ${warning}
       <label>${escapeHTML(label)}<textarea class="component-settings-editor" rows="13" spellcheck="false" autocomplete="off">${escapeHTML(settings?.content || '')}</textarea><small class="muted">Edit the displayed keys. Server settings are validated before they are applied.</small></label>
-      <div class="settings-editor-actions"><button type="button" class="button-secondary" data-restore-component-defaults>Restore defaults</button>${component.installed && ['xray','xray-xhttp'].includes(component.id) ? '<button type="button" class="button-secondary" data-refresh-xray-profiles>Refresh device profiles</button>' : ''}</div>`;
-    body.querySelector('[data-refresh-xray-profiles]')?.addEventListener('click', async event => {
-      if (!confirm('Refresh all device links from the saved server settings? Users must import the refreshed profiles. Fingerprints and UUIDs stay the same.')) return;
-      await runComponentProfileRefresh(component,event.currentTarget);
-    });
+      <div class="settings-editor-actions"><button type="button" class="button-secondary" data-restore-component-defaults>Restore defaults</button></div>`;
     body.querySelector('[data-restore-component-defaults]').onclick = () => {
       body.querySelector('.component-settings-editor').value = String(settings?.default_content || '');
     };
@@ -1379,12 +1394,12 @@ function componentTextSettingsDialog(component) {
     const submit = event.submitter || document.querySelector('#dialog-ok');
     try {
       await runPendingAction(`component:${component.id}:settings`, submit, 'Saving…', async () => {
-        await api(`/api/components/${component.id}/settings`, {method: 'PUT', body: {content: editor.value}});
+        const saved = await api(`/api/components/${component.id}/settings`, {method: 'PUT', body: {content: editor.value}});
         const message = !component.installed
           ? `${component.name} settings saved for installation.`
           : component.id === 'tweaks' ? `${component.name} settings saved and reapplied.` : `${component.name} settings saved.`;
         if (generation === dialogGeneration && dialog.open) dialog.close();
-        notify(message, 'success');
+        notify(message + (saved.updated_profiles ? ` ${saved.updated_profiles} profile(s) refreshed automatically. Import the updated profiles in your apps.` : ''), 'success');
       });
     } catch (error) { notifyError(error); }
   };
