@@ -408,8 +408,6 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"readOnlyComponentSettingsDialog(component)",
 		"app.inert = true",
 		"dialog.show()",
-		"blockBackgroundScroll",
-		"event.target.closest?.('#dialog, #notifications')",
 		"const settingsAction = buttonHTML('Settings'",
 		"data-component-update",
 		"/api/components/${component.id}/update",
@@ -451,9 +449,6 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		if !strings.Contains(stylesheet, expected) {
 			t.Fatalf("dashboard stylesheet is missing %q", expected)
 		}
-	}
-	if strings.Contains(stylesheet, "scrollbar-gutter") || strings.Contains(stylesheet, "html.dialog-open,\nbody.dialog-open") {
-		t.Fatal("dialog styling still changes the page scrollbar geometry")
 	}
 	markup := readAsset("/")
 	if !strings.Contains(markup, `value="cancel" class="button-secondary" formnovalidate`) {

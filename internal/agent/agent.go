@@ -763,10 +763,6 @@ func pathExists(path string) bool {
 	return err == nil
 }
 
-func xrayConfigPath() string {
-	return stableXrayVariant.configPath()
-}
-
 func writeXrayConfig(path string, body []byte) error {
 	temporary := path + ".write-next"
 	_ = os.Remove(temporary)

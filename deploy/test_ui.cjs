@@ -6,6 +6,72 @@ const source = fs.readFileSync('internal/panel/web/app.js', 'utf8');
 const restoreSource = source.slice(source.indexOf('async function restoreConfiguration('), source.indexOf('function setupUpdater()'));
 const suggestName = vm.runInNewContext(source.slice(source.indexOf('function suggestedDeviceName('), source.indexOf('function deviceDialog(')) + ';suggestedDeviceName');
 
+function dialogFixture() {
+  const calls = [];
+  const nodes = Object.fromEntries(['#dialog', '#dialog-body', '#dialog-form', '#dialog-title', '#dialog-ok', '#dialog-form [value="cancel"]', '[data-cookie-choice]', '[data-clear-bypass]', '[data-bypass-rooms]', 'input'].map(key => [key, {disabled:false}]));
+  nodes['#dialog'].close = () => { nodes['#dialog'].open = false; };
+  nodes['.drop'] = {querySelector: key => nodes[key], addEventListener() {}};
+  nodes['#dialog-body'].querySelector = key => nodes[key];
+  nodes['#dialog-ok'].isConnected = true;
+  nodes['#dialog-ok'].closest = () => nodes['#dialog'];
+  const context = vm.createContext({
+    document:{querySelector:key => nodes[key]}, FormData, pendingActions:new Set(), dialogGeneration:0,
+    BYPASS_COMPONENT_SETTINGS:{test:{provider:'telemost',label:'Yandex Telemost'}},
+    openDialog:dialog => { dialog.open = true; }, renderBypassRooms() {}, escapeHTML:String,
+    notify() {}, notifyError:error => { throw error; }, confirm:() => true,
+    api:async (path, options = {}) => { calls.push({path,...options}); return {rooms:[]}; }
+  });
+  vm.runInContext(source.slice(source.indexOf('function fileDropHTML('), source.indexOf('function openDialog(')) + source.slice(source.indexOf('async function runPendingAction('), source.indexOf('const localInput =')) + source.slice(source.indexOf('function bypassSettingsDialog('), source.indexOf('function componentTextSettingsDialog(')), context);
+  return {nodes,calls,context,open:() => context.bypassSettingsDialog({id:'test'}),submit:value => nodes['#dialog-form'].onsubmit({submitter:{value},preventDefault(){}})};
+}
+
+test('provider cookie selection and clearing stay local until Save, and Cancel discards them', async () => {
+  const f = dialogFixture();
+  const mutations = () => f.calls.filter(call => call.method);
+  f.open();
+  const file = new Blob(['[{"name":"test","value":"synthetic"}]'], {type:'application/json'});
+  file.name = 'cookies.json';
+  f.nodes.input.files = [file];
+  f.nodes.input.onchange();
+  assert.equal(f.nodes['#dialog-ok'].disabled, false);
+  assert.equal(mutations().length, 0);
+  await f.submit('cancel');
+  f.open();
+  await f.submit('default');
+  assert.equal(mutations().length, 0);
+  f.nodes.input.onchange();
+  await f.submit('default');
+  assert.equal(mutations()[0].method, 'POST');
+  assert.equal(await mutations()[0].body.get('cookies').text(), await file.text());
+  f.open();
+  f.nodes['[data-clear-bypass]'].onclick();
+  await f.submit('cancel');
+  f.open();
+  await f.submit('default');
+  assert.equal(mutations().length, 1);
+  f.nodes['[data-clear-bypass]'].onclick();
+  await f.submit('default');
+  assert.equal(mutations()[1].method, 'DELETE');
+});
+
+test('new dialogs reset actions and late saves cannot change the next dialog buttons', async () => {
+  const {nodes,context} = dialogFixture();
+  const button = nodes['#dialog-ok'];
+  const cancel = nodes['#dialog-form [value="cancel"]'];
+  button.disabled = cancel.disabled = cancel.hidden = true;
+  context.setDialogAction('Save');
+  assert.equal(button.disabled || cancel.disabled || cancel.hidden, false);
+  let finish;
+  const pending = context.runPendingAction('save', button, 'Saving', () => new Promise(resolve => { finish = resolve; }));
+  context.dialogGeneration++;
+  context.setDialogAction('Restore');
+  button.disabled = true;
+  finish();
+  await pending;
+  assert.equal(button.textContent, 'Restore');
+  assert.equal(button.disabled, true);
+});
+
 test('connection names use country, group and short protocol with case-insensitive suffixes', () => {
   const group = {id:1,name:'Admin'};
   const devices = [{group_id:1,name:'Ireland - Admin - Amnezia'}, {group_id:1,name:'ireland - admin - amnezia2'}, {group_id:2,name:'Ireland - Admin - Xray'}];

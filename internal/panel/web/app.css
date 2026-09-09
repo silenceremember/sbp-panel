@@ -75,6 +75,9 @@ body {
   background: var(--bg);
 }
 
+html { scrollbar-gutter: stable; }
+html.dialog-open { overflow: hidden; }
+
 body {
   margin: 0;
   color: var(--text);
@@ -346,8 +349,7 @@ label {
   color: var(--muted);
 }
 
-.card,
-.form-panel {
+.card {
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -385,6 +387,8 @@ label {
   display: grid;
   gap: var(--space-3);
 }
+
+.form-stack > * { margin-block: 0; }
 
 .auth-password-toggle {
   width: 100%;
@@ -522,6 +526,7 @@ header {
 .actions,
 .title-row,
 .dialog-actions,
+.form-actions,
 .group-actions,
 .device-actions,
 .component-actions {
@@ -591,9 +596,6 @@ header {
   width: min(var(--content-width), 100%);
   margin: 0 auto;
   padding: var(--space-5);
-}
-
-.layout {
   display: grid;
   gap: var(--space-5);
 }
@@ -609,7 +611,10 @@ header {
 
 /* Tables and state badges */
 .table-wrap {
+  min-width: 0;
+  max-width: 100%;
   overflow: auto;
+  overscroll-behavior-x: contain;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -665,19 +670,19 @@ header {
 }
 
 .components-table {
-  min-width: 900px;
+  min-width: 1100px;
 }
 
 .components-table th:nth-child(1) {
-  width: 27%;
+  width: 240px;
 }
 
 .components-table th:nth-child(2) {
-  width: 14%;
+  width: 120px;
 }
 
 .components-table th:nth-child(3) {
-  width: 14%;
+  width: 120px;
 }
 
 .components-table th:nth-child(5) {
@@ -972,10 +977,10 @@ header {
 
 /* Provider credentials */
 .drop {
+  position: relative;
   min-height: 104px;
   display: grid;
   place-items: center;
-  margin-top: var(--space-3);
   padding: var(--space-4);
   border: 1px dashed #596171;
   border-radius: var(--radius-md);
@@ -994,7 +999,12 @@ header {
 }
 
 .drop input {
-  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .saved-rooms {
@@ -1035,14 +1045,6 @@ header {
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }
 
-.upload-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-3);
-  margin-top: var(--space-3);
-}
-
 /* Dialogs and notifications */
 dialog {
   width: min(520px, calc(100vw - 30px));
@@ -1054,14 +1056,18 @@ dialog {
   bottom: auto;
   left: 50%;
   margin: 0;
-  padding: 18px;
+  padding: var(--space-4);
   overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--line);
-  border-radius: 13px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: var(--text);
   transform: translate(-50%, -50%);
 }
+
+#dialog-form { display: grid; gap: var(--space-4); }
+#dialog-title { margin: 0; }
 
 body.dialog-open::before {
   content: '';
@@ -1074,7 +1080,7 @@ body.dialog-open::before {
 
 .settings-notice,
 .settings-warning {
-  margin: 0 0 var(--space-3);
+  margin: 0;
   padding: 10px 12px;
   border: 1px solid rgb(239 155 71 / 28%);
   border-radius: var(--radius-sm);
@@ -1097,31 +1103,7 @@ body.dialog-open::before {
   font-size: 12px;
   line-height: 1.55;
   tab-size: 2;
-}
-
-.settings-editor-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: var(--space-3);
-}
-
-.settings-inline-control {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.settings-inline-control input {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.settings-inline-control .settings-port-input {
-  flex: 0 0 90px;
-}
-
-.settings-inline-control button {
-  flex: 0 0 auto;
+  overscroll-behavior: contain;
 }
 
 .docker-compose-setting {
@@ -1191,60 +1173,10 @@ body.dialog-open::before {
   color: var(--text);
 }
 
-.sni-list {
-  max-height: 260px;
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  list-style: none;
-}
-
-.sni-list li {
-  min-height: 46px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 7px 9px 7px 12px;
-}
-
-.sni-list li + li {
-  border-top: 1px solid var(--line);
-}
-
-.sni-list li > span {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.sni-list code {
-  overflow-wrap: anywhere;
-  color: var(--text);
-}
-
-.sni-list small {
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: var(--good-soft);
-  color: var(--good);
-  font-size: 10px;
-  font-weight: var(--font-strong);
-}
-
-.sni-list button {
-  --button-height: 30px;
-  --button-padding-x: 9px;
-  --button-font-size: 11px;
-  flex: 0 0 auto;
-}
-
-.dialog-actions {
+.dialog-actions,
+.form-actions {
   justify-content: flex-end;
-  margin-top: 18px;
+  flex-wrap: wrap;
 }
 
 .notifications {
@@ -1427,7 +1359,9 @@ body.dialog-open::before {
 }
 
 @media (max-width: 760px) {
+  header { position: static; }
   .header-inner {
+    flex-wrap: wrap;
     padding: 12px 15px;
   }
 
@@ -1447,10 +1381,6 @@ body.dialog-open::before {
   .group-title,
   .group-actions {
     grid-column: 1 / -1;
-  }
-
-  .components-table {
-    min-width: 760px;
   }
 
   .links-table {
@@ -1495,19 +1425,6 @@ body.dialog-open::before {
     margin-inline: 0;
     left: 50vw;
     padding: 15px;
-  }
-
-  .dialog-actions {
-    flex-wrap: wrap;
-  }
-
-  .sni-list li > span {
-    flex-wrap: wrap;
-  }
-
-  .settings-inline-control {
-    align-items: stretch;
-    flex-direction: column;
   }
 
   .docker-compose-setting {

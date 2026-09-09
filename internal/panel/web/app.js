@@ -57,15 +57,6 @@ document.addEventListener('keydown', event => {
   dialog.close('cancel');
 });
 
-const blockBackgroundScroll = event => {
-  const dialog = document.querySelector('#dialog');
-  if (!dialog?.open || event.target.closest?.('#dialog, #notifications')) return;
-  event.preventDefault();
-};
-
-document.addEventListener('wheel', blockBackgroundScroll, {capture: true, passive: false});
-document.addEventListener('touchmove', blockBackgroundScroll, {capture: true, passive: false});
-
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function imageReady(source) {
@@ -290,10 +281,29 @@ const buttonHTML = (label, variant = 'primary', attributes = '') => {
   const className = variant === 'primary' ? '' : ` class="button-${variant}"`;
   return `<button${className}${attributes ? ` ${attributes}` : ''}>${escapeHTML(label)}</button>`;
 };
+function fileDropHTML(label) {
+  return `<label class="drop"><span>${escapeHTML(label)}</span><input type="file" accept="application/json,.json" aria-label="${escapeHTML(label)}"></label>`;
+}
+
+function bindFileDrop(drop, choose) {
+  const input = drop.querySelector('input');
+  const select = file => { if (file && !input.disabled) choose(file); };
+  input.onchange = () => select(input.files[0]);
+  for (const eventName of ['dragenter', 'dragover', 'dragleave', 'drop']) {
+    drop.addEventListener(eventName, event => {
+      event.preventDefault();
+      drop.classList.toggle('drag', !input.disabled && (eventName === 'dragenter' || eventName === 'dragover'));
+      if (eventName === 'drop') select(event.dataTransfer.files[0]);
+    });
+  }
+  return input;
+}
+
 function setDialogAction(label, danger = false) {
   const button = document.querySelector('#dialog-ok');
   const cancel = document.querySelector('#dialog-form [value="cancel"]');
-  if (cancel) cancel.hidden = false;
+  if (cancel) { cancel.hidden = false; cancel.disabled = false; }
+  button.disabled = false;
   button.textContent = label;
   button.className = danger ? 'button-danger' : '';
   button.formNoValidate = false;
@@ -308,6 +318,7 @@ function openDialog(dialog) {
 }
 async function runPendingAction(key, control, pendingLabel, action) {
   if (pendingActions.has(key)) return false;
+  const generation = dialogGeneration;
   pendingActions.add(key);
   const previousLabel = control?.textContent;
   if (control) {
@@ -319,7 +330,7 @@ async function runPendingAction(key, control, pendingLabel, action) {
     return true;
   } finally {
     pendingActions.delete(key);
-    if (control?.isConnected) {
+    if (control?.isConnected && (!control.closest('#dialog') || generation === dialogGeneration)) {
       control.disabled = false;
       if (pendingLabel) control.textContent = previousLabel;
     }
@@ -575,7 +586,7 @@ function configurationDialog() {
   let selection = 0;
   body.innerHTML = `<p class="settings-notice">One portable file for groups, dates, devices, component settings and provider cookies. Restore generates new connection profiles for this server. Keep the downloaded file private. Keep this tab open during restore.</p>
     <button type="button" class="button-secondary" data-export>Download configuration</button>
-    <label class="drop" data-config-drop>Choose or drop an SBP configuration<input type="file" accept="application/json,.json"></label>
+    ${fileDropHTML('Choose or drop an SBP configuration')}
     <div data-config-preview class="muted">Current groups and profiles will be replaced. Panel login and certificate stay on this server.</div>`;
   body.querySelector('[data-export]').onclick = async () => { try { downloadConfiguration(await api('/api/configuration')); } catch (error) { notifyError(error); } };
   const preview = body.querySelector('[data-config-preview]');
@@ -600,10 +611,8 @@ function configurationDialog() {
       submit.disabled = false;
     } catch (error) { notifyError(error); }
   };
-  const drop = body.querySelector('[data-config-drop]');
-  drop.querySelector('input').onchange = event => choose(event.target.files[0]);
-  drop.ondragover = event => { event.preventDefault(); };
-  drop.ondrop = event => { event.preventDefault(); choose(event.dataTransfer.files[0]); };
+  const drop = body.querySelector('.drop');
+  bindFileDrop(drop, choose);
   openDialog(dialog);
   document.querySelector('#dialog-form').onsubmit = async event => {
     if (event.submitter?.value === 'cancel') return;
@@ -1297,69 +1306,62 @@ function bypassSettingsDialog(component) {
   const body = document.querySelector('#dialog-body');
   const form = document.querySelector('#dialog-form');
   document.querySelector('#dialog-title').textContent = `${settings.label} settings`;
-  setDialogAction('Close');
-  const cancel = form.querySelector('[value="cancel"]');
-  if (cancel) cancel.hidden = true;
-  body.innerHTML = '<p class="muted">Loading provider settings…</p>';
-  form.onsubmit = () => {};
-  openDialog(dialog);
-
-  const render = () => {
-    if (generation !== dialogGeneration || !dialog.open) return;
-    body.innerHTML = `
-      <p class="settings-notice">${escapeHTML(GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
-      <p class="muted">Upload or replace the account cookie JSON used by ${escapeHTML(settings.label)}. It is stored in a root-only server directory and can be prepared before the component is installed.</p>
-      <label class="drop bypass-settings-drop">Drop the cookie JSON file here<input type="file" accept="application/json,.json"></label>
-      <div class="saved-rooms"><span class="saved-rooms-title">Rooms</span><div class="saved-room-list" data-bypass-rooms></div></div>
-      <div class="upload-footer"><button type="button" class="button-danger" data-clear-bypass>Clear credentials</button></div>`;
-    const input = body.querySelector('input[type="file"]');
-    const drop = body.querySelector('.bypass-settings-drop');
-    const rooms = body.querySelector('[data-bypass-rooms]');
-    renderBypassRooms(rooms, settings.provider);
-
-    const upload = async file => {
-      if (!file) return;
-      const payload = new FormData();
-      payload.append('cookies', file);
-      try {
-        await runPendingAction(`bypass:${settings.provider}:upload`, input, '', async () => {
-          const value = await api(`/api/bypass/${settings.provider}/credentials`, {method: 'POST', body: payload});
-          input.value = '';
-          notify(`Uploaded: ${value.filename}, ${value.bytes} bytes`, 'success', `${settings.label} cookies uploaded`);
-        });
-      } catch (error) { notifyError(error); }
-    };
-    input.onchange = () => upload(input.files[0]);
-    for (const name of ['dragenter', 'dragover']) drop.addEventListener(name, event => {
-      event.preventDefault();
-      drop.classList.add('drag');
-    });
-    for (const name of ['dragleave', 'drop']) drop.addEventListener(name, event => {
-      event.preventDefault();
-      drop.classList.remove('drag');
-    });
-    drop.addEventListener('drop', event => upload(event.dataTransfer.files[0]));
-    body.querySelector('[data-clear-bypass]').onclick = async event => {
-      if (!confirm(`Clear cookies and stop the current “${settings.label}” session? Devices and saved device rooms will remain. Upload a new JSON file to start them again.`)) return;
-      try {
-        await runPendingAction(`bypass:${settings.provider}:clear`, event.currentTarget, 'Clearing…', async () => {
-          const value = await api(`/api/bypass/${settings.provider}/credentials`, {method: 'DELETE'});
-          input.value = '';
-          notify(value.message || 'Credentials cleared.', 'success');
-        });
-      } catch (error) { notifyError(error); }
-    };
+  const submit = setDialogAction('Save');
+  submit.disabled = true;
+  let selected = null;
+  let clear = false;
+  body.innerHTML = `
+    <p class="settings-notice">Choose the account cookie JSON for ${escapeHTML(settings.label)}, then Save to apply it.</p>
+    ${fileDropHTML('Choose or drop a cookie JSON file')}
+    <p class="muted" data-cookie-choice>No changes selected.</p>
+    <div class="saved-rooms"><span class="saved-rooms-title">Rooms</span><div class="saved-room-list" data-bypass-rooms></div></div>
+    <div class="form-actions"><button type="button" class="button-danger" data-clear-bypass>Clear credentials</button></div>`;
+  const choice = body.querySelector('[data-cookie-choice]');
+  const input = bindFileDrop(body.querySelector('.drop'), file => {
+    if (file.size > 256 * 1024) { notify('Choose a cookie JSON file smaller than 256 KiB.', 'error'); return; }
+    selected = file;
+    clear = false;
+    choice.textContent = `${file.name} - ready to save`;
+    submit.disabled = false;
+  });
+  const clearButton = body.querySelector('[data-clear-bypass]');
+  clearButton.onclick = () => {
+    selected = null;
+    clear = true;
+    input.value = '';
+    choice.textContent = 'Save will clear the cookies and stop this provider session. Devices and rooms will remain.';
+    submit.disabled = false;
   };
-
-  api('/api/bypass/rooms')
-    .then(value => {
-      bypassRooms = Array.isArray(value?.rooms) ? value.rooms : [];
-      render();
-    })
-    .catch(error => {
-      if (generation === dialogGeneration && dialog.open) dialog.close();
-      notifyError(error);
-    });
+  const rooms = body.querySelector('[data-bypass-rooms]');
+  renderBypassRooms(rooms, settings.provider);
+  form.onsubmit = async event => {
+    if (event.submitter?.value === 'cancel') return;
+    event.preventDefault();
+    if (!selected && !clear) return;
+    if (clear && !confirm(`Clear ${settings.label} cookies and stop its session?`)) return;
+    try {
+      await runPendingAction(`bypass:${settings.provider}:save`, submit, 'Saving…', async () => {
+        const payload = new FormData();
+        if (selected) payload.append('cookies', selected);
+        input.disabled = true;
+        clearButton.disabled = true;
+        try {
+          await api(`/api/bypass/${settings.provider}/credentials`, {method: clear ? 'DELETE' : 'POST', ...(clear ? {} : {body: payload})});
+          if (generation === dialogGeneration && dialog.open) dialog.close();
+          notify(`${settings.label} credentials saved.`, 'success');
+        } finally {
+          input.disabled = false;
+          clearButton.disabled = false;
+        }
+      });
+    } catch (error) { notifyError(error); }
+  };
+  openDialog(dialog);
+  api('/api/bypass/rooms').then(value => {
+    if (generation !== dialogGeneration) return;
+    bypassRooms = Array.isArray(value?.rooms) ? value.rooms : [];
+    renderBypassRooms(rooms, settings.provider);
+  }).catch(notifyError);
 }
 
 function componentTextSettingsDialog(component) {
@@ -1380,7 +1382,7 @@ function componentTextSettingsDialog(component) {
       <p class="settings-notice">${escapeHTML(settings?.notice || GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
       ${warning}
       <label>${escapeHTML(label)}<textarea class="component-settings-editor" rows="13" spellcheck="false" autocomplete="off">${escapeHTML(settings?.content || '')}</textarea><small class="muted">Edit the displayed keys. Server settings are validated before they are applied.</small></label>
-      <div class="settings-editor-actions"><button type="button" class="button-secondary" data-restore-component-defaults>Restore defaults</button></div>`;
+      <div class="form-actions"><button type="button" class="button-secondary" data-restore-component-defaults>Restore defaults</button></div>`;
     body.querySelector('[data-restore-component-defaults]').onclick = () => {
       body.querySelector('.component-settings-editor').value = String(settings?.default_content || '');
     };
