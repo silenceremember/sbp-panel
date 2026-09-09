@@ -814,13 +814,17 @@ header {
 }
 
 .group-summary {
-  display: grid;
-  grid-template-columns: minmax(220px, 300px) 200px 160px minmax(0, 1fr);
-  justify-content: start;
+  display: flex;
+  flex-wrap: wrap;
   gap: 24px;
   align-items: center;
   padding: 16px 18px;
   border-bottom: 1px solid var(--line);
+}
+
+.group-title {
+  flex: 1 1 180px;
+  min-width: 0;
 }
 
 .group-title h3 {
@@ -876,6 +880,9 @@ header {
 }
 
 .group-actions {
+  flex: 0 0 auto;
+  max-width: 100%;
+  margin-left: auto;
   justify-content: flex-end;
   flex-wrap: wrap;
 }
@@ -1315,15 +1322,19 @@ button.notification-close {
 }
 
 .notification.has-qr {
-  width: auto;
-  grid-template-columns: 320px;
-  padding: 14px 42px 12px 14px;
+  width: min(270px, 100%);
+  grid-template-columns: minmax(0, 1fr);
+  padding: 14px;
+}
+
+.has-qr .notification-title {
+  margin: 0;
+  padding-right: 24px;
 }
 
 .notification-qr {
-  width: 320px;
-  height: 320px;
-  grid-column: 1;
+  width: 100%;
+  aspect-ratio: 1;
   display: block;
   padding: 5px;
   border-radius: var(--radius-sm);
@@ -1331,9 +1342,9 @@ button.notification-close {
   image-rendering: pixelated;
 }
 
-.notification-qr-actions {
-  grid-column: 1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.has-qr .notification-actions {
+  display: flex;
+  flex-wrap: wrap;
 }
 
 @keyframes notice-in {
@@ -1367,19 +1378,6 @@ button.notification-close {
   }
 }
 
-@media (max-width: 1050px) {
-  .group-summary {
-    grid-template-columns: minmax(230px, 360px) 190px 150px;
-    gap: 24px;
-  }
-
-  .group-actions {
-    grid-column: 1 / -1;
-    justify-content: flex-end;
-  }
-
-}
-
 @media (max-width: 760px) {
   header { position: static; }
   .header-inner {
@@ -1396,46 +1394,15 @@ button.notification-close {
   }
 
   .group-summary {
-    grid-template-columns: 1fr 1fr;
     gap: 15px;
   }
 
-  .group-title,
-  .group-actions {
-    grid-column: 1 / -1;
+  .group-title {
+    flex-basis: 100%;
   }
 
   .links-table {
     min-width: 760px;
-  }
-}
-
-@media (max-width: 640px) {
-  .notification.has-qr {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .notification.has-qr .notification-content {
-    grid-template-columns: 1fr;
-  }
-
-  .notification.has-qr .notification-message {
-    grid-column: 1;
-    min-height: 110px;
-    max-height: 110px;
-  }
-
-  .notification.has-qr .notification-qr {
-    width: min(320px, calc(100vw - 76px));
-    height: auto;
-    aspect-ratio: 1;
-    grid-column: 1;
-    justify-self: center;
-  }
-
-  .notification.has-qr .notification-actions {
-    grid-column: 1;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1475,10 +1442,16 @@ button.notification-close {
   }
 
   .group-summary {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .group-title {
+    flex-basis: auto;
   }
 
   .group-actions {
+    margin-left: 0;
     align-items: stretch;
   }
 
@@ -1510,7 +1483,5 @@ button.notification-close {
   .devices-table td { padding: 5px 14px; border: 0; text-align: left; }
   .device-actions { justify-content: flex-start; flex-wrap: wrap; }
   .component-actions button, .device-actions button { --button-height: 40px; }
-  .notification-qr-actions button, .notification-qr-actions a { min-height: 40px; }
+  .has-qr .notification-actions { --button-height: 40px; }
 }
-
-.notification-qr-title { grid-column: 1; overflow-wrap: anywhere; font-size: 13px; }

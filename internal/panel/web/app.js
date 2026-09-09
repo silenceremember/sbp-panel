@@ -166,7 +166,7 @@ function notify(message, type = 'info', title = '', options = {}) {
     image.alt = title ? `${title} QR code` : 'Credential QR code';
 
     const actions = document.createElement('div');
-    actions.className = 'notification-actions notification-qr-actions';
+    actions.className = 'notification-actions';
     const copy = document.createElement('button');
     copy.type = 'button';
     copy.className = 'button-secondary';
@@ -180,7 +180,7 @@ function notify(message, type = 'info', title = '', options = {}) {
     actions.append(copy, download);
 
     const qrTitle = document.createElement('strong');
-    qrTitle.className = 'notification-qr-title';
+    qrTitle.className = 'notification-title';
     qrTitle.textContent = title || 'Profile QR';
     notice.append(qrTitle, image, actions);
     notice.insertAdjacentHTML('beforeend', '<span class="notification-timer"></span>');
@@ -1196,12 +1196,12 @@ async function copyCredential(title, credential, id) {
     return;
   }
   await copyText(credential);
-  notify(credential, 'success', `Credential copied · ${title}`, {
+  notify(credential, 'success', 'Credential copied', {
     qr: `/api/devices/${id}/qr`,
     qrFilename: `${title || 'credential'}-qr.png`,
     actions: credential.startsWith('vless://') ? [{label: 'Amnezia QR', onClick: async () => {
       const value = await api(`/api/devices/${id}/credential?format=amnezia`);
-      notify(value.credential, 'info', `Amnezia · ${title}`, {qr: `/api/devices/${id}/qr?format=amnezia`, qrFilename: `${title}-amnezia.png`});
+      notify(value.credential, 'info', 'Amnezia QR', {qr: `/api/devices/${id}/qr?format=amnezia`, qrFilename: `${title}-amnezia.png`});
     }}] : []
   });
 }

@@ -3,6 +3,12 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.7.4] - 2026-09-09
+
+- Made QR notifications smaller with evenly spaced actions in one row, including Amnezia QR.
+- Shortened the copied notification title to Credential copied.
+- Group actions now use available space and wrap only when needed, staying aligned to the right.
+
 ## [1.7.3] - 2026-09-09
 
 - Unified action icons with Tabler and softened button corners across the panel.
