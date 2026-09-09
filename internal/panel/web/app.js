@@ -275,20 +275,21 @@ const fmtUptime = seconds => {
   return `${days ? `${days} d ` : ''}${hours} h ${minutes} min`;
 };
 const escapeHTML = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+// Linea Iconset, CC0-1.0. Original SVG geometry; source revision and license in NOTICE.
 const BUTTON_ICONS = {
-  Edit: 'm14 4 6 6M3 21l4-1L21 6a2.8 2.8 0 0 0-4-4L3 16v5Z',
-  Remove: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7',
-  Copy: 'M9 9h12v12H9ZM15 5V3H3v12h2',
-  Copied: 'm5 12 4 4L19 6',
-  'Copy check link': 'm10 13 4-4m-6 6-1 1a3.5 3.5 0 0 1-5-5l5-5a3.5 3.5 0 0 1 5 0m0 12a3.5 3.5 0 0 0 5 0l5-5a3.5 3.5 0 0 0-5-5l-1 1',
-  Settings: 'M4 3v4m0 6v8M12 3v10m0 6v2M20 3v2m0 6v10M4 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM12 13a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM20 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
-  'Refresh dashboard': 'M20 7a9 9 0 1 0 1 9M20 2v6h-6',
-  'Sign out': 'M9 3H3v18h6m6-14 5 5-5 5m-8-5h13',
-  'Close notification': 'm6 6 12 12M6 18 18 6'
+  'Edit': '<line x1="20" y1="54" x2="10" y2="44"/><polygon points="10,44 1,62 2,63 20,54 63,11 53,1"/><line x1="54" y1="20" x2="44" y2="10"/><line x1="58" y1="16" x2="48" y2="6"/><polyline points="5,54 9,55 10,59"/>',
+  'Remove': '<polyline points="25,8 25,1 39,1 39,8"/><polyline points="14,10 14,63 50,63 50,10"/><line x1="26" y1="20" x2="26" y2="54"/><line x1="38" y1="20" x2="38" y2="54"/><line x1="10" y1="9" x2="54" y2="9"/>',
+  'Copy': '<polygon points="20,9 47,9 47,63 8,63 8,21"/><polyline points="24,6 29,1 56,1 56,55 49,55"/><polyline points="8,21 20,21 20,9"/>',
+  'Copied': '<polyline points="13,33 25,45 49,21"/>',
+  'Copy check link': '<path d="M37.004,32.166c1.224,0.533,2.576,0.829,3.997,0.828 c3.271-0.003,6.175-1.576,7.998-4.006L60.99,16.98c1.255-1.673,1.998-3.751,1.996-6.002c-0.003-5.522-4.484-9.997-10.007-9.993 c-2.251,0.002-4.327,0.747-5.999,2.004L33.989,15.998c-1.768,1.805-2.997,4.277-2.996,7.003c0.001,1.424,0.3,2.778,0.837,4.003"/><path d="M37.004,32.166"/><path d="M31.831,27.004c0.053,0.121,0.107,0.24,0.166,0.358"/><path d="M26.997,31.836c-1.225-0.535-2.577-0.831-3.998-0.83 c-2.251,0.002-4.328,0.747-5.999,2.004L4.01,46.02c-1.768,1.804-2.997,4.276-2.995,7.002c0.003,5.522,4.484,9.997,10.007,9.993 c3.271-0.003,6.174-1.576,7.997-4.006L31.01,47.001c1.255-1.673,1.998-3.751,1.996-6.002c-0.001-1.422-0.299-2.774-0.835-3.998"/><line x1="23.006" y1="41.006" x2="40.994" y2="22.994"/>',
+  'Settings': '<polygon points="32,1 26,1 26,10 20,12 14,6 6,14 12,20 10,26 1,26 1,38 10,38 12,44 6,50 14,58 20,52 26,54 26,63 32,63 38,63 38,54 44,52 50,58 58,50 52,44 54,38 63,38 63,26 54,26 52,20 58,14 50,6 44,12 38,10 38,1"/><circle cx="32" cy="32" r="6"/>',
+  'Refresh dashboard': '<path d="M33,1c7.678,0,15.354,2.929,21.212,8.787 C64.91,20.484,65.841,37.248,57.003,49l-6.001,6.002"/><path d="M31,63c-7.678,0-15.354-2.929-21.212-8.787 C-0.91,43.516-1.841,26.752,6.997,15l6.001-6.002"/><polyline points="51,44 51,55 62,55"/><polyline points="13,20 13,9 2,9"/>',
+  'Close notification': '<line x1="18.947" y1="17.153" x2="45.045" y2="43.056"/><line x1="19.045" y1="43.153" x2="44.947" y2="17.056"/>',
+  'Export codes': '<polyline points="40,50 32,58 24,50"/><line x1="32" y1="58" x2="32" y2="26"/><polyline points="24,42 1,42 1,6 63,6 63,42 40,42"/>'
 };
 function buttonLabelHTML(label) {
-  const path = BUTTON_ICONS[label];
-  return path ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg><span class="sr-only">${escapeHTML(label)}</span>` : escapeHTML(label);
+  const icon = BUTTON_ICONS[label];
+  return icon ? `<svg viewBox="-2 -2 68 68" aria-hidden="true">${icon}</svg><span class="sr-only">${escapeHTML(label)}</span>` : escapeHTML(label);
 }
 function setButtonLabel(button, label) {
   button.innerHTML = buttonLabelHTML(label);

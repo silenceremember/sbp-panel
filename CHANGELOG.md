@@ -3,6 +3,11 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.7.2] - 2026-09-09
+
+- Replaced custom action icons with the CC0 Linea icon set, including clearer edit and link symbols.
+- Export codes now uses a download icon with a tooltip. Sign out keeps its text label.
+
 ## [1.7.1] - 2026-09-09
 
 - Browser tabs now show SBP and the server country, updating immediately when the country is changed.
