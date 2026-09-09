@@ -594,8 +594,9 @@ function downloadFile(filename, content, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+const nameSlug = name => name.trim().replace(/\s+/g, '_');
 function groupCheckURL(group) {
-  return `${window.location.origin}/check/${encodeURIComponent(group.name.trim().replace(/\s+/g, '_'))}`;
+  return `${window.location.origin}/check/${encodeURIComponent(nameSlug(group.name))}`;
 }
 
 async function exportGroupCodes(group) {
@@ -605,7 +606,8 @@ async function exportGroupCodes(group) {
     const name = device.name.replace(/[\\`*_{}\[\]()<>#!|]/g, '\\$&').replace(/[\r\n]+/g, ' ');
     return `## ${name}\n\n${DEVICE_METHOD_NAMES[device.method] || device.method}${device.enabled ? '' : ' · Disabled'}\n\n\`\`\`text\n${credential}\n\`\`\`\n`;
   }));
-  downloadFile(`${group.name}-connections.md`, `# ${group.name}\n\n${sections.join('\n')}\n## Check link\n\n${groupCheckURL(group)}\n`, 'text/markdown;charset=utf-8');
+  const filename = [state.server_country, group.name].filter(Boolean).map(nameSlug).join('_') + '.md';
+  downloadFile(filename, `# ${group.name}\n\n${sections.join('\n')}\n## Check link\n\n${groupCheckURL(group)}\n`, 'text/markdown;charset=utf-8');
 }
 
 function configurationDialog() {
@@ -821,6 +823,7 @@ function setupServerLink() {
   const link = document.querySelector('#server-link');
   const edit = document.querySelector('#server-link-edit');
   if (!link || !edit || !state) return;
+  document.title = state.server_country ? `SBP · ${state.server_country}` : 'SBP';
   if (state.server_url) {
     link.href = state.server_url;
     try { link.textContent = new URL(state.server_url).hostname; } catch { link.textContent = 'Server page'; }

@@ -3,6 +3,11 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.7.1] - 2026-09-09
+
+- Browser tabs now show SBP and the server country, updating immediately when the country is changed.
+- Group code exports use filenames such as Ireland_Family_Group.md, with the server country followed by the group name.
+
 ## [1.7.0] - 2026-09-09
 
 - Replaced common edit, remove, copy, settings, refresh and sign-out buttons with compact SVG icons and clear tooltips. Install, Update and confirmation actions keep their text.

@@ -5,14 +5,14 @@ const {test} = require('node:test');
 const source = fs.readFileSync('internal/panel/web/app.js', 'utf8');
 const restoreSource = source.slice(source.indexOf('async function restoreConfiguration('), source.indexOf('function setupUpdater()'));
 const suggestName = vm.runInNewContext(source.slice(source.indexOf('function suggestedDeviceName('), source.indexOf('function deviceDialog(')) + ';suggestedDeviceName');
-const exportSource = source.slice(source.indexOf('function groupCheckURL('), source.indexOf('function configurationDialog('));
+const exportSource = source.slice(source.indexOf('const nameSlug ='), source.indexOf('function configurationDialog('));
 
 test('group Markdown export keeps ordered codes, multiline profiles and the final check link', async () => {
   const calls = [];
   let output;
   const profile = '[Interface]\nPrivateKey = synthetic\n[Peer]\nPublicKey = test';
   const exportCodes = vm.runInNewContext(exportSource + ';exportGroupCodes', {
-    window:{location:{origin:'https://panel.example'}}, DEVICE_METHOD_NAMES:{xray:'Xray',amneziawg:'AmneziaWG'},
+    window:{location:{origin:'https://panel.example'}}, state:{server_country:'Ireland'}, DEVICE_METHOD_NAMES:{xray:'Xray',amneziawg:'AmneziaWG'},
     downloadFile:(name,content,type) => { output = {name,content,type}; },
     api:async path => {
       calls.push(path);
@@ -23,7 +23,7 @@ test('group Markdown export keeps ordered codes, multiline profiles and the fina
     }
   });
   await exportCodes({id:7,name:'Family Group'});
-  assert.equal(output.name, 'Family Group-connections.md');
+  assert.equal(output.name, 'Ireland_Family_Group.md');
   assert.match(output.type, /^text\/markdown/);
   assert(output.content.includes('## Phone \\[home\\]'));
   assert(output.content.indexOf('vless://synthetic') < output.content.indexOf(profile));
