@@ -176,7 +176,7 @@ function notify(message, type = 'info', title = '', options = {}) {
     download.className = 'button button-secondary';
     download.href = options.qr;
     download.download = options.qrFilename || 'credential-qr.png';
-    download.textContent = 'Download QR';
+    setButtonLabel(download, 'Download QR');
     actions.append(copy, download);
 
     const qrTitle = document.createElement('strong');
@@ -275,21 +275,22 @@ const fmtUptime = seconds => {
   return `${days ? `${days} d ` : ''}${hours} h ${minutes} min`;
 };
 const escapeHTML = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-// Linea Iconset, CC0-1.0. Original SVG geometry; source revision and license in NOTICE.
+// Tabler Icons, MIT. Original SVG geometry; source revision and license in NOTICE.
 const BUTTON_ICONS = {
-  'Edit': '<line x1="20" y1="54" x2="10" y2="44"/><polygon points="10,44 1,62 2,63 20,54 63,11 53,1"/><line x1="54" y1="20" x2="44" y2="10"/><line x1="58" y1="16" x2="48" y2="6"/><polyline points="5,54 9,55 10,59"/>',
-  'Remove': '<polyline points="25,8 25,1 39,1 39,8"/><polyline points="14,10 14,63 50,63 50,10"/><line x1="26" y1="20" x2="26" y2="54"/><line x1="38" y1="20" x2="38" y2="54"/><line x1="10" y1="9" x2="54" y2="9"/>',
-  'Copy': '<polygon points="20,9 47,9 47,63 8,63 8,21"/><polyline points="24,6 29,1 56,1 56,55 49,55"/><polyline points="8,21 20,21 20,9"/>',
-  'Copied': '<polyline points="13,33 25,45 49,21"/>',
-  'Copy check link': '<path d="M37.004,32.166c1.224,0.533,2.576,0.829,3.997,0.828 c3.271-0.003,6.175-1.576,7.998-4.006L60.99,16.98c1.255-1.673,1.998-3.751,1.996-6.002c-0.003-5.522-4.484-9.997-10.007-9.993 c-2.251,0.002-4.327,0.747-5.999,2.004L33.989,15.998c-1.768,1.805-2.997,4.277-2.996,7.003c0.001,1.424,0.3,2.778,0.837,4.003"/><path d="M37.004,32.166"/><path d="M31.831,27.004c0.053,0.121,0.107,0.24,0.166,0.358"/><path d="M26.997,31.836c-1.225-0.535-2.577-0.831-3.998-0.83 c-2.251,0.002-4.328,0.747-5.999,2.004L4.01,46.02c-1.768,1.804-2.997,4.276-2.995,7.002c0.003,5.522,4.484,9.997,10.007,9.993 c3.271-0.003,6.174-1.576,7.997-4.006L31.01,47.001c1.255-1.673,1.998-3.751,1.996-6.002c-0.001-1.422-0.299-2.774-0.835-3.998"/><line x1="23.006" y1="41.006" x2="40.994" y2="22.994"/>',
-  'Settings': '<polygon points="32,1 26,1 26,10 20,12 14,6 6,14 12,20 10,26 1,26 1,38 10,38 12,44 6,50 14,58 20,52 26,54 26,63 32,63 38,63 38,54 44,52 50,58 58,50 52,44 54,38 63,38 63,26 54,26 52,20 58,14 50,6 44,12 38,10 38,1"/><circle cx="32" cy="32" r="6"/>',
-  'Refresh dashboard': '<path d="M33,1c7.678,0,15.354,2.929,21.212,8.787 C64.91,20.484,65.841,37.248,57.003,49l-6.001,6.002"/><path d="M31,63c-7.678,0-15.354-2.929-21.212-8.787 C-0.91,43.516-1.841,26.752,6.997,15l6.001-6.002"/><polyline points="51,44 51,55 62,55"/><polyline points="13,20 13,9 2,9"/>',
-  'Close notification': '<line x1="18.947" y1="17.153" x2="45.045" y2="43.056"/><line x1="19.045" y1="43.153" x2="44.947" y2="17.056"/>',
-  'Export codes': '<polyline points="40,50 32,58 24,50"/><line x1="32" y1="58" x2="32" y2="26"/><polyline points="24,42 1,42 1,6 63,6 63,42 40,42"/>'
+  "Edit": "<path d=\"M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4\"/><path d=\"M13.5 6.5l4 4\"/>",
+  "Remove": "<path d=\"M4 7l16 0\"/><path d=\"M10 11l0 6\"/><path d=\"M14 11l0 6\"/><path d=\"M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12\"/><path d=\"M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3\"/>",
+  "Copy": "<path d=\"M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666\"/><path d=\"M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1\"/>",
+  "Copied": "<path d=\"M5 12l5 5l10 -10\"/>",
+  "Copy check link": "<path d=\"M9 15l6 -6\"/><path d=\"M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464\"/><path d=\"M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463\"/>",
+  "Settings": "<path d=\"M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065\"/><path d=\"M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0\"/>",
+  "Refresh dashboard": "<path d=\"M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4\"/><path d=\"M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4\"/>",
+  "Close notification": "<path d=\"M18 6l-12 12\"/><path d=\"M6 6l12 12\"/>",
+  "Export codes": "<path d=\"M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2\"/><path d=\"M7 11l5 5l5 -5\"/><path d=\"M12 4l0 12\"/>",
+  "Sign out": "<path d=\"M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2\"/><path d=\"M9 12h12l-3 -3\"/><path d=\"M18 15l3 -3\"/>"
 };
 function buttonLabelHTML(label) {
-  const icon = BUTTON_ICONS[label];
-  return icon ? `<svg viewBox="-2 -2 68 68" aria-hidden="true">${icon}</svg><span class="sr-only">${escapeHTML(label)}</span>` : escapeHTML(label);
+  const icon = BUTTON_ICONS[label === 'Download QR' ? 'Export codes' : label];
+  return icon ? `<svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><span class="sr-only">${escapeHTML(label)}</span>` : escapeHTML(label);
 }
 function setButtonLabel(button, label) {
   button.innerHTML = buttonLabelHTML(label);

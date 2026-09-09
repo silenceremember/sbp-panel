@@ -3,6 +3,11 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.7.3] - 2026-09-09
+
+- Unified action icons with Tabler and softened button corners across the panel.
+- Restored the Sign out icon and replaced Download QR with a download icon, keeping accessible labels and tooltips.
+
 ## [1.7.2] - 2026-09-09
 
 - Replaced custom action icons with the CC0 Linea icon set, including clearer edit and link symbols.

@@ -131,7 +131,7 @@ textarea {
   gap: var(--button-gap, 6px);
   padding: 1px var(--button-padding-x, 13px) 0;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--accent);
   color: #1b1008;
   font-size: var(--button-font-size, 13px);
@@ -166,11 +166,11 @@ textarea {
 }
 
 :is(button, .button) > svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 4;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
   pointer-events: none;
