@@ -3,6 +3,12 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.6.3] - 2026-09-09
+
+- Replaced common edit, remove, copy, settings, refresh and sign-out buttons with compact SVG icons and clear tooltips. Install, Update and confirmation actions keep their text.
+- Added Export codes for each group: download a Markdown file with connection names, codes and the group's check link at the end.
+- Unified action styling across groups, devices and notifications, with larger mobile targets and less empty space in component tables. Icons are bundled locally without external dependencies.
+
 ## [1.6.2] - 2026-09-09
 
 - Fixed background scrolling through dialogs and unified spacing, file uploads and action buttons. Provider cookies now apply with Save; Cancel leaves them unchanged.

@@ -445,7 +445,7 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		}
 	}
 	stylesheet := readAsset("/app.css")
-	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "flex: 0 0 94px", "body.dialog-open::before", "z-index: 910", "grid-template-columns: 320px", "image-rendering: pixelated"} {
+	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "body.dialog-open::before", "z-index: 910", "grid-template-columns: 320px", "image-rendering: pixelated"} {
 		if !strings.Contains(stylesheet, expected) {
 			t.Fatalf("dashboard stylesheet is missing %q", expected)
 		}

@@ -156,6 +156,33 @@ textarea {
   opacity: 0.52;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+:is(button, .button) > svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+:is(button, .button):has(> svg) {
+  position: relative;
+  width: var(--button-height, var(--control-height));
+  flex: 0 0 auto;
+  padding: 0;
+}
+
 button:focus-visible,
 .button:focus-visible,
 a:focus-visible {
@@ -670,7 +697,7 @@ header {
 }
 
 .components-table {
-  min-width: 1100px;
+  min-width: 1000px;
 }
 
 .components-table th:nth-child(1) {
@@ -686,7 +713,7 @@ header {
 }
 
 .components-table th:nth-child(5) {
-	width: 320px;
+  width: 220px;
 }
 
 .components-table th:last-child,
@@ -703,11 +730,6 @@ header {
   --button-height: 34px;
   --button-padding-x: 11px;
   --button-font-size: 12px;
-}
-
-.component-actions button {
-  width: 94px;
-  flex: 0 0 94px;
 }
 
 .install-note {
@@ -1234,7 +1256,7 @@ body.dialog-open::before {
   align-self: center;
 }
 
-.notification-close {
+button.notification-close {
   width: 24px;
   height: 24px;
   position: absolute;
@@ -1460,7 +1482,7 @@ body.dialog-open::before {
     align-items: stretch;
   }
 
-  .group-actions button {
+  .group-actions button:not(:has(> svg)) {
     flex: 1;
   }
 
@@ -1487,7 +1509,7 @@ body.dialog-open::before {
   .devices-table tr { padding: 10px 0; border-top: 1px solid var(--line); }
   .devices-table td { padding: 5px 14px; border: 0; text-align: left; }
   .device-actions { justify-content: flex-start; flex-wrap: wrap; }
-  .device-actions button { min-height: 40px; }
+  .component-actions button, .device-actions button { --button-height: 40px; }
   .notification-qr-actions button, .notification-qr-actions a { min-height: 40px; }
 }
 

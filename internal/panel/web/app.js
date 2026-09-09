@@ -150,14 +150,12 @@ function notify(message, type = 'info', title = '', options = {}) {
   const close = document.createElement('button');
   close.type = 'button';
   close.className = 'notification-close';
-  close.setAttribute('aria-label', 'Close notification');
-  close.title = 'Close';
-  close.textContent = '×';
+  setButtonLabel(close, 'Close notification');
   const bindCopy = button => {
     button.onclick = async () => {
       await copyText(text);
-      button.textContent = 'Copied';
-      setTimeout(() => { if (button.isConnected) button.textContent = 'Copy'; }, 1200);
+      setButtonLabel(button, 'Copied');
+      setTimeout(() => { if (button.isConnected) setButtonLabel(button, 'Copy'); }, 1200);
     };
   };
   if (options.qr) {
@@ -172,7 +170,7 @@ function notify(message, type = 'info', title = '', options = {}) {
     const copy = document.createElement('button');
     copy.type = 'button';
     copy.className = 'button-secondary';
-    copy.textContent = 'Copy';
+    setButtonLabel(copy, 'Copy');
     bindCopy(copy);
     const download = document.createElement('a');
     download.className = 'button button-secondary';
@@ -187,16 +185,16 @@ function notify(message, type = 'info', title = '', options = {}) {
     notice.append(qrTitle, image, actions);
     notice.insertAdjacentHTML('beforeend', '<span class="notification-timer"></span>');
   } else {
-    notice.innerHTML = `<div class="notification-content"><strong class="notification-title"></strong><p class="notification-message"></p></div><div class="notification-actions"><button type="button" class="button-secondary notification-copy">Copy</button></div><span class="notification-timer"></span>`;
+    notice.innerHTML = `<div class="notification-content"><strong class="notification-title"></strong><p class="notification-message"></p></div><div class="notification-actions">${buttonHTML('Copy', 'secondary', 'type="button" data-notification-copy')}</div><span class="notification-timer"></span>`;
     notice.querySelector('.notification-title').textContent = title || labels[type] || labels.info;
     notice.querySelector('.notification-message').textContent = text;
-    bindCopy(notice.querySelector('.notification-copy'));
+    bindCopy(notice.querySelector('[data-notification-copy]'));
   }
   const actionButtons = actionDefinitions.map(definition => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = definition.danger ? 'button-danger' : 'button-secondary';
-    button.textContent = definition.label;
+    setButtonLabel(button, definition.label);
     notice.querySelector('.notification-actions').append(button);
     return {button, onClick: definition.onClick};
   });
@@ -277,9 +275,28 @@ const fmtUptime = seconds => {
   return `${days ? `${days} d ` : ''}${hours} h ${minutes} min`;
 };
 const escapeHTML = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const BUTTON_ICONS = {
+  Edit: 'm14 4 6 6M3 21l4-1L21 6a2.8 2.8 0 0 0-4-4L3 16v5Z',
+  Remove: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7',
+  Copy: 'M9 9h12v12H9ZM15 5V3H3v12h2',
+  Copied: 'm5 12 4 4L19 6',
+  'Copy check link': 'm10 13 4-4m-6 6-1 1a3.5 3.5 0 0 1-5-5l5-5a3.5 3.5 0 0 1 5 0m0 12a3.5 3.5 0 0 0 5 0l5-5a3.5 3.5 0 0 0-5-5l-1 1',
+  Settings: 'M4 3v4m0 6v8M12 3v10m0 6v2M20 3v2m0 6v10M4 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM12 13a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM20 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z',
+  'Refresh dashboard': 'M20 7a9 9 0 1 0 1 9M20 2v6h-6',
+  'Sign out': 'M9 3H3v18h6m6-14 5 5-5 5m-8-5h13',
+  'Close notification': 'm6 6 12 12M6 18 18 6'
+};
+function buttonLabelHTML(label) {
+  const path = BUTTON_ICONS[label];
+  return path ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg><span class="sr-only">${escapeHTML(label)}</span>` : escapeHTML(label);
+}
+function setButtonLabel(button, label) {
+  button.innerHTML = buttonLabelHTML(label);
+  button.title = label;
+}
 const buttonHTML = (label, variant = 'primary', attributes = '') => {
   const className = variant === 'primary' ? '' : ` class="button-${variant}"`;
-  return `<button${className}${attributes ? ` ${attributes}` : ''}>${escapeHTML(label)}</button>`;
+  return `<button${className} title="${escapeHTML(label)}"${attributes ? ` ${attributes}` : ''}>${buttonLabelHTML(label)}</button>`;
 };
 function fileDropHTML(label) {
   return `<label class="drop"><span>${escapeHTML(label)}</span><input type="file" accept="application/json,.json" aria-label="${escapeHTML(label)}"></label>`;
@@ -323,7 +340,7 @@ async function runPendingAction(key, control, pendingLabel, action) {
   const previousLabel = control?.textContent;
   if (control) {
     control.disabled = true;
-    if (pendingLabel) control.textContent = pendingLabel;
+    if (pendingLabel) setButtonLabel(control, pendingLabel);
   }
   try {
     await action();
@@ -332,7 +349,7 @@ async function runPendingAction(key, control, pendingLabel, action) {
     pendingActions.delete(key);
     if (control?.isConnected && (!control.closest('#dialog') || generation === dialogGeneration)) {
       control.disabled = false;
-      if (pendingLabel) control.textContent = previousLabel;
+      if (pendingLabel) setButtonLabel(control, previousLabel);
     }
   }
 }
@@ -538,6 +555,10 @@ function render(initial = {}) {
   activeLifecycle = initial.discovery?.value?.lifecycle?.status === 'running' ? initial.discovery.value.lifecycle : null;
   app.innerHTML = '';
   app.append(document.querySelector('#dashboard').content.cloneNode(true));
+  for (const id of ['refresh', 'logout']) {
+    const button = document.getElementById(id);
+    setButtonLabel(button, button.textContent);
+  }
   document.querySelector('#refresh').onclick = async event => {
     try {
       await runPendingAction('dashboard:refresh', event.currentTarget, 'Refreshing…', async () => {
@@ -566,11 +587,25 @@ function render(initial = {}) {
   startMetricsPolling();
 }
 
-function downloadConfiguration(value) {
+function downloadFile(filename, content, type) {
   const link = document.createElement('a');
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], {type: 'application/json'}));
-  link.href = url; link.download = 'sbp-configuration.json'; link.click();
+  const url = URL.createObjectURL(new Blob([content], {type}));
+  link.href = url; link.download = filename; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function groupCheckURL(group) {
+  return `${window.location.origin}/check/${encodeURIComponent(group.name.trim().replace(/\s+/g, '_'))}`;
+}
+
+async function exportGroupCodes(group) {
+  const {devices} = await api(`/api/groups/${group.id}/devices`);
+  const sections = await Promise.all(devices.map(async device => {
+    const {credential} = await api(`/api/devices/${device.id}/credential`);
+    const name = device.name.replace(/[\\`*_{}\[\]()<>#!|]/g, '\\$&').replace(/[\r\n]+/g, ' ');
+    return `## ${name}\n\n${DEVICE_METHOD_NAMES[device.method] || device.method}${device.enabled ? '' : ' · Disabled'}\n\n\`\`\`text\n${credential}\n\`\`\`\n`;
+  }));
+  downloadFile(`${group.name}-connections.md`, `# ${group.name}\n\n${sections.join('\n')}\n## Check link\n\n${groupCheckURL(group)}\n`, 'text/markdown;charset=utf-8');
 }
 
 function configurationDialog() {
@@ -588,7 +623,7 @@ function configurationDialog() {
     <button type="button" class="button-secondary" data-export>Download configuration</button>
     ${fileDropHTML('Choose or drop an SBP configuration')}
     <div data-config-preview class="muted">Current groups and profiles will be replaced. Panel login and certificate stay on this server.</div>`;
-  body.querySelector('[data-export]').onclick = async () => { try { downloadConfiguration(await api('/api/configuration')); } catch (error) { notifyError(error); } };
+  body.querySelector('[data-export]').onclick = async () => { try { downloadFile('sbp-configuration.json', JSON.stringify(await api('/api/configuration'), null, 2), 'application/json'); } catch (error) { notifyError(error); } };
   const preview = body.querySelector('[data-config-preview]');
   const choose = async file => {
     if (restoring) return;
@@ -708,10 +743,10 @@ function setupUpdater() {
   };
   const renderButton = () => {
     if (updateInfo?.update_available) {
-      button.textContent = `Update to v${updateInfo.latest_version}`;
+      setButtonLabel(button, `Update to v${updateInfo.latest_version}`);
       button.classList.remove('button-secondary');
     } else {
-      button.textContent = 'Check for updates';
+      setButtonLabel(button, 'Check for updates');
       button.classList.add('button-secondary');
     }
     button.disabled = Boolean(activeLifecycle);
@@ -722,7 +757,7 @@ function setupUpdater() {
     const includePrereleases = prereleases.checked;
     button.disabled = true;
     prereleases.disabled = true;
-    button.textContent = 'Checking…';
+    setButtonLabel(button, 'Checking…');
     try {
       const info = await api(`/api/update${includePrereleases ? '?include_prereleases=1' : ''}`);
       if (generation !== requestGeneration || !button.isConnected || prereleases.checked !== includePrereleases) return;
@@ -889,7 +924,7 @@ function renderGroups(prefetchedDevices = null) {
           <div class="group-title"><h3 data-group-name></h3><span class="group-contact" data-group-contact></span></div>
           <div><span class="group-stat-label">Expires</span><span data-group-expiry></span></div>
           <div><span class="group-stat-label">Monthly traffic</span><span class="traffic" data-group-traffic></span></div>
-          <div class="group-actions">${buttonHTML('+1 month', 'primary', 'data-extend')}${buttonHTML('+Device', 'secondary', 'data-device')}${buttonHTML('Copy check link', 'secondary', 'data-check-link')}${buttonHTML('Edit', 'secondary', 'data-edit')}${buttonHTML('Remove', 'danger', 'data-delete')}</div>
+          <div class="group-actions">${buttonHTML('+1 month', 'primary', 'data-extend')}${buttonHTML('+Device', 'secondary', 'data-device')}${buttonHTML('Export codes', 'secondary', 'data-export-codes')}${buttonHTML('Copy check link', 'secondary', 'data-check-link')}${buttonHTML('Edit', 'secondary', 'data-edit')}${buttonHTML('Remove', 'danger', 'data-delete')}</div>
         </div>
         <div class="devices-wrap"><table class="devices-table"><thead><tr><th>Device</th><th>Method</th><th>Monthly traffic</th><th>Status</th><th>Actions</th></tr></thead><tbody class="devices"><tr data-empty><td colspan="5" class="empty-row">Loading devices…</td></tr></tbody></table></div>`;
     }
@@ -919,10 +954,13 @@ function renderGroups(prefetchedDevices = null) {
       } catch (e) { notifyError(e); }
     };
     card.querySelector('[data-device]').onclick = () => deviceDialog({group_id: group.id});
+    card.querySelector('[data-export-codes]').onclick = async event => {
+      try { await runPendingAction(`group:${group.id}:export`, event.currentTarget, 'Exporting…', () => exportGroupCodes(group)); }
+      catch (error) { notifyError(error); }
+    };
     card.querySelector('[data-check-link]').onclick = async () => {
       try {
-        const slug = group.name.trim().replace(/\s+/g, '_');
-        const checkURL = `${window.location.origin}/check/${slug}`;
+        const checkURL = groupCheckURL(group);
         await copyText(checkURL);
         notify(checkURL, 'success', `Check link copied · ${group.name}`);
       } catch (e) { notifyError(e); }
@@ -1181,7 +1219,7 @@ async function runComponentLifecycle(component, button, operation) {
     );
   } catch (error) {
     setLifecycleControls(null);
-    if (button.isConnected) { button.disabled = false; button.textContent = 'Retry'; }
+    if (button.isConnected) { button.disabled = false; setButtonLabel(button, 'Retry'); }
     notifyError(error);
     return false;
   }
@@ -1204,7 +1242,7 @@ async function runComponentUpdate(component, button) {
     );
   } catch (error) {
     setLifecycleControls(null);
-    if (button.isConnected) { button.disabled = false; button.textContent = 'Retry'; }
+    if (button.isConnected) { button.disabled = false; setButtonLabel(button, 'Retry'); }
     notifyError(error);
     return false;
   }
@@ -1229,7 +1267,7 @@ async function runComponentProfileRefresh(component, button) {
     );
   } catch (error) {
     setLifecycleControls(null);
-    if (button.isConnected) { button.disabled = false; button.textContent = 'Retry'; }
+    if (button.isConnected) { button.disabled = false; setButtonLabel(button, 'Retry'); }
     notifyError(error);
     return false;
   }
@@ -1705,7 +1743,7 @@ async function watchJob(id, button, operation, options = {}) {
     const message = job?.error || `${operation === 'uninstall' ? 'Removal' : operation === 'install' ? 'Installation' : 'Operation'} failed`;
     if (options.throwOnError) throw new Error(message);
     button.disabled = false;
-    button.textContent = 'Retry';
+    setButtonLabel(button, 'Retry');
     notify(message, 'error');
     return job;
   }

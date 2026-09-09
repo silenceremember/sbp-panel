@@ -5,6 +5,46 @@ const {test} = require('node:test');
 const source = fs.readFileSync('internal/panel/web/app.js', 'utf8');
 const restoreSource = source.slice(source.indexOf('async function restoreConfiguration('), source.indexOf('function setupUpdater()'));
 const suggestName = vm.runInNewContext(source.slice(source.indexOf('function suggestedDeviceName('), source.indexOf('function deviceDialog(')) + ';suggestedDeviceName');
+const exportSource = source.slice(source.indexOf('function groupCheckURL('), source.indexOf('function configurationDialog('));
+
+test('group Markdown export keeps ordered codes, multiline profiles and the final check link', async () => {
+  const calls = [];
+  let output;
+  const profile = '[Interface]\nPrivateKey = synthetic\n[Peer]\nPublicKey = test';
+  const exportCodes = vm.runInNewContext(exportSource + ';exportGroupCodes', {
+    window:{location:{origin:'https://panel.example'}}, DEVICE_METHOD_NAMES:{xray:'Xray',amneziawg:'AmneziaWG'},
+    downloadFile:(name,content,type) => { output = {name,content,type}; },
+    api:async path => {
+      calls.push(path);
+      if (path === '/api/groups/7/devices') return {devices:[{id:8,name:'Phone [home]',method:'xray',enabled:true},{id:9,name:'Laptop',method:'amneziawg',enabled:false}]};
+      if (path === '/api/devices/8/credential') return {credential:'vless://synthetic'};
+      if (path === '/api/devices/9/credential') return {credential:profile};
+      throw new Error(`Unexpected request: ${path}`);
+    }
+  });
+  await exportCodes({id:7,name:'Family Group'});
+  assert.equal(output.name, 'Family Group-connections.md');
+  assert.match(output.type, /^text\/markdown/);
+  assert(output.content.includes('## Phone \\[home\\]'));
+  assert(output.content.indexOf('vless://synthetic') < output.content.indexOf(profile));
+  assert(output.content.includes('AmneziaWG · Disabled\n\n```text\n' + profile + '\n```'));
+  assert(output.content.endsWith('## Check link\n\nhttps://panel.example/check/Family_Group\n'));
+  assert.equal(calls.length, 3);
+});
+
+test('failed credential fetch does not download an incomplete group export', async () => {
+  let downloaded = false;
+  const exportCodes = vm.runInNewContext(exportSource + ';exportGroupCodes', {
+    window:{location:{origin:'https://panel.example'}}, DEVICE_METHOD_NAMES:{},
+    downloadFile:() => { downloaded = true; },
+    api:async path => {
+      if (path === '/api/groups/7/devices') return {devices:[{id:8}]};
+      throw new Error('credential unavailable');
+    }
+  });
+  await assert.rejects(exportCodes({id:7,name:'Family'}), /credential unavailable/);
+  assert.equal(downloaded, false);
+});
 
 function dialogFixture() {
   const calls = [];
@@ -18,6 +58,7 @@ function dialogFixture() {
     document:{querySelector:key => nodes[key]}, FormData, pendingActions:new Set(), dialogGeneration:0,
     BYPASS_COMPONENT_SETTINGS:{test:{provider:'telemost',label:'Yandex Telemost'}},
     openDialog:dialog => { dialog.open = true; }, renderBypassRooms() {}, escapeHTML:String,
+    setButtonLabel:(button,label) => { button.textContent = label; },
     notify() {}, notifyError:error => { throw error; }, confirm:() => true,
     api:async (path, options = {}) => { calls.push({path,...options}); return {rooms:[]}; }
   });
