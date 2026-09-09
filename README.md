@@ -58,7 +58,7 @@ This example is from an earlier release, so some labels and versions may differ 
 | Docker | Ubuntu package | Isolated managed services |
 | [Xray](https://github.com/XTLS/Xray-core) | 26.3.27 | VLESS over TCP with REALITY and XTLS Vision |
 | [Xray](https://github.com/XTLS/Xray-core) XHTTP | 26.3.27 | VLESS over XHTTP with REALITY |
-| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | Protocol 3.1; engine 3.1.20260814 | AmneziaWG server and device profiles with conservative obfuscation defaults |
+| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | Protocol 3.1; engine 3.1.20260828 | AmneziaWG server and device profiles with conservative obfuscation defaults |
 | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) | 0.3.8 | WB Stream, Telemost, DION, and VK Calls |
 
 SBP provides a management layer around these upstream projects; it does not create or own their protocols.
@@ -138,7 +138,7 @@ Routing integrations create one independent room for each device. If saved rooms
 | Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
 | Component lifecycle | An active install, update, or removal is restored after a browser reload and conflicting actions remain disabled until it finishes |
 | Xray profile update | Global **Update** rebuilds every matching link from the component's current managed server settings and publishes the set atomically; UUIDs, runtime users, and the running container do not change |
-| AmneziaWG component update | A protocol upgrade replaces the complete deployment and rotates all keys; a client-configuration revision refreshes every stored profile atomically without changing server keys, peers, or the container; both require users to import the newly issued profiles |
+| AmneziaWG component update | An engine or server-configuration revision replaces the complete deployment and rotates all keys; a client-configuration revision refreshes every stored profile atomically without changing server keys, peers, or the container; both require users to import the newly issued profiles |
 | Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |
 | Docker settings | Install, repair, or remove Docker Compose v2; verified external Ubuntu packages can be removed without adoption, while unknown CLI plugins remain untouched; includes a read-only container list |
 | REALITY settings | Each Xray component keeps its default profile SNI and can save a validated TLS target plus additional server-side SNI hostnames before installation or apply them to its installed managed container |
@@ -194,7 +194,10 @@ See the concise release history in [CHANGELOG.md](CHANGELOG.md).
 
 **Pre-release builds are strongly discouraged for normal use.** They remain in the release history only for developer testing, investigation, and convenient downloads, and may contain bugs or incomplete work.
 
-The `1.4.x` line uses AmneziaWG 3.1 with AmneziaVPN 5.0.1.5. Its default preset enables header protection, keeps narrow non-overlapping header ranges, leaves random trailers and cookie suppression disabled, does not enable optional timing or content-padding experiments, and issues client profiles with the conservative MTU 1280 setting. Related upstream client regressions are tracked in [issue #3043](https://github.com/amnezia-vpn/amnezia-client/issues/3043) and [issue #3048](https://github.com/amnezia-vpn/amnezia-client/issues/3048).
+The current AmneziaWG 3.1 preset uses H1-H4 = 1, 2, 3, 4, S1-S4 = 12, a unique header-protection key, Jc = 6, I1, and client MTU 1280. Random trailers and cookie suppression remain disabled. These defaults follow the upstream compatibility guidance; they do not guarantee connectivity on every network.
+
+To apply a prerelease: enable **Pre-release** next to **Check for updates**, update SBP, then use **Components > AmneziaWG > Update**. This replaces the outdated engine/configuration and reissues every device profile, including disabled devices. Users must import the new profiles. A current deployment does not offer a redundant engine update. The stable update channel continues to exclude prereleases.
+
 
 ## Plans
 

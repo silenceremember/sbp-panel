@@ -43,7 +43,7 @@ const (
 	attemptWindow               = 15 * time.Minute
 	maxTrackedIPEntries         = 4096
 	maxConcurrentPasswordChecks = 2
-	amneziaWGProfileGeneration  = 3
+	amneziaWGProfileGeneration  = 4
 )
 
 var managedMethodByComponent = map[string]string{
@@ -1929,9 +1929,12 @@ type amneziaWGComponentUpdateAgentResponse struct {
 	Result struct {
 		Token   string `json:"token"`
 		Devices []struct {
-			DeviceID int64  `json:"device_id"`
-			Name     string `json:"name"`
-			Active   bool   `json:"active"`
+			DeviceID          int64  `json:"device_id"`
+			Name              string `json:"name"`
+			Active            bool   `json:"active"`
+			Credential        string `json:"credential"`
+			ProfileGeneration int    `json:"profile_generation"`
+			ProtocolVersion   string `json:"protocol_version"`
 		} `json:"devices"`
 		Profiles []amneziaWGComponentUpdateProfile `json:"profiles"`
 	} `json:"result"`
@@ -1985,7 +1988,7 @@ func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request
 	s.credentialMu.Lock()
 	defer s.credentialMu.Unlock()
 	if r.Method == http.MethodPost {
-		devices, err := s.db.ListAllDeviceMetadata()
+		devices, err := s.db.ListAllDevices()
 		if err != nil {
 			fail(w, http.StatusInternalServerError, err)
 			return
@@ -2005,9 +2008,12 @@ func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request
 				continue
 			}
 			requested = append(requested, map[string]any{
-				"device_id": device.ID,
-				"name":      device.Name,
-				"active":    device.Enabled && activeGroups[device.GroupID],
+				"device_id":          device.ID,
+				"name":               device.Name,
+				"active":             device.Enabled && activeGroups[device.GroupID],
+				"credential":         device.Credential,
+				"profile_generation": device.ProfileGeneration,
+				"protocol_version":   device.ProtocolVersion,
 			})
 		}
 		var response amneziaWGComponentUpdateAgentResponse
@@ -2053,10 +2059,22 @@ func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		currentByID[device.ID] = device
-		oldProfiles = append(oldProfiles, store.DeviceProfileUpdate{DeviceID: device.ID, Name: device.Name, Credential: device.Credential, ProfileGeneration: device.ProfileGeneration, ProtocolVersion: device.ProtocolVersion})
+	}
+	// The agent persists the originals before replacing the runtime. Reading
+	// them from its transaction also survives a panel restart after publication.
+	for _, device := range response.Result.Devices {
+		if _, exists := currentByID[device.DeviceID]; exists {
+			oldProfiles = append(oldProfiles, store.DeviceProfileUpdate{DeviceID: device.DeviceID, Name: device.Name, Credential: device.Credential, ProfileGeneration: device.ProfileGeneration, ProtocolVersion: device.ProtocolVersion})
+		}
+	}
+	rollback := func() error {
+		if err := s.rollbackAmneziaWGComponentUpdate(response.Result.Token); err != nil {
+			return err
+		}
+		return s.db.UpdateDeviceProfiles(oldProfiles)
 	}
 	if len(response.Result.Profiles) != len(currentByID) || len(response.Result.Devices) != len(currentByID) {
-		rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+		rollbackErr := rollback()
 		fail(w, http.StatusBadGateway, errors.Join(errors.New("AmneziaWG device set changed while the component update was running"), rollbackErr))
 		return
 	}
@@ -2068,7 +2086,7 @@ func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request
 	}, len(response.Result.Devices))
 	for _, device := range response.Result.Devices {
 		if _, duplicate := requested[device.DeviceID]; duplicate {
-			rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+			rollbackErr := rollback()
 			fail(w, http.StatusBadGateway, errors.Join(errors.New("agent returned a duplicate AmneziaWG device set"), rollbackErr))
 			return
 		}
@@ -2082,7 +2100,7 @@ func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request
 		expected, requestedOK := requested[profile.DeviceID]
 		active := device.Enabled && activeGroups[device.GroupID]
 		if !ok || !requestedOK || expected.Name != device.Name || expected.Active != active || seen[profile.DeviceID] || strings.TrimSpace(profile.Credential) == "" || profile.ProfileGeneration != amneziaWGProfileGeneration || profile.ProtocolVersion != "3.1" {
-			rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+			rollbackErr := rollback()
 			fail(w, http.StatusBadGateway, errors.Join(errors.New("agent returned an incomplete AmneziaWG profile set"), rollbackErr))
 			return
 		}
@@ -2090,19 +2108,13 @@ func (s *server) updateAmneziaWGComponent(w http.ResponseWriter, r *http.Request
 		updates = append(updates, store.DeviceProfileUpdate{DeviceID: device.ID, Name: device.Name, Credential: profile.Credential, ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion})
 	}
 	if err := s.db.UpdateDeviceProfiles(updates); err != nil {
-		rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
+		rollbackErr := rollback()
 		fail(w, http.StatusInternalServerError, errors.Join(fmt.Errorf("publish new AmneziaWG profiles: %w", err), rollbackErr))
 		return
 	}
 	commitPath := "/v1/components/amneziawg/update/" + url.PathEscape(response.Result.Token) + "/commit"
 	if err := s.callAgentJSON(http.MethodPost, commitPath, nil, &map[string]any{}); err != nil {
-		rollbackErr := s.rollbackAmneziaWGComponentUpdate(response.Result.Token)
-		if rollbackErr == nil {
-			if restoreErr := s.db.UpdateDeviceProfiles(oldProfiles); restoreErr != nil {
-				fail(w, http.StatusInternalServerError, errors.Join(err, fmt.Errorf("restore previous AmneziaWG profiles: %w", restoreErr)))
-				return
-			}
-		}
+		rollbackErr := rollback()
 		fail(w, http.StatusBadGateway, errors.Join(fmt.Errorf("commit AmneziaWG component update: %w", err), rollbackErr))
 		return
 	}

@@ -1451,7 +1451,7 @@ async function loadDiscovery(prefetched = null) {
       row.querySelector('[data-component-update]')?.addEventListener('click', async event => {
         if (component.update_kind === 'upgrade') {
           if (component.id !== 'amneziawg') return;
-          if (!confirm('Update AmneziaWG to protocol 3.1? The server identity and every device key will be replaced. All users must import their newly issued profiles.')) return;
+          if (!confirm('Update the AmneziaWG engine and configuration? The server identity and every device key will be replaced. All users must import their newly issued profiles.')) return;
           await runComponentUpdate(component, event.currentTarget);
           return;
         }

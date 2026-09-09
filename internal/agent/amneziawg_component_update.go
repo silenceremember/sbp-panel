@@ -23,9 +23,12 @@ const (
 var amneziaWGUpdateSnapshotPath = "/opt/vpn-panel-managed/amneziawg/.component-update-rollback.json"
 
 type amneziaWGComponentDevice struct {
-	DeviceID int64  `json:"device_id"`
-	Name     string `json:"name"`
-	Active   bool   `json:"active"`
+	DeviceID          int64  `json:"device_id"`
+	Name              string `json:"name"`
+	Active            bool   `json:"active"`
+	Credential        string `json:"credential"`
+	ProfileGeneration int    `json:"profile_generation"`
+	ProtocolVersion   string `json:"protocol_version"`
 }
 
 type amneziaWGComponentProfile struct {
@@ -43,6 +46,7 @@ type amneziaWGComponentUpdateResult struct {
 
 type amneziaWGComponentUpdateSnapshot struct {
 	Token            string                      `json:"token"`
+	Phase            string                      `json:"phase"`
 	Devices          []amneziaWGComponentDevice  `json:"devices"`
 	Profiles         []amneziaWGComponentProfile `json:"profiles"`
 	PreviousConfig   []byte                      `json:"previous_config"`
@@ -137,10 +141,12 @@ func generateAmneziaWG3Deployment(image string, devices []amneziaWGComponentDevi
 		profiles = append(profiles, amneziaWGComponentProfile{DeviceID: device.DeviceID, Credential: credential, ProfileGeneration: amneziaWGProfileGeneration, ProtocolVersion: "3.1"})
 	}
 	metadata, err := json.MarshalIndent(map[string]string{
-		"server_public": serverPublic,
-		"endpoint":      endpoint,
-		"shared":        shared,
-		"protocol":      "3.1",
+		"server_public":       serverPublic,
+		"endpoint":            endpoint,
+		"shared":              shared,
+		"protocol":            "3.1",
+		"engine":              awgVersion,
+		"deployment_revision": amneziaWGDeploymentRevision,
 	}, "", "  ")
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -208,8 +214,15 @@ func prepareAmneziaWGComponentUpdate(devices []amneziaWGComponentDevice) (result
 	if err != nil {
 		return result, err
 	}
-	if strings.Contains(string(previousConfig), "HeaderProtectionKey =") {
-		return result, errors.New("AmneziaWG protocol 3.1 is already installed")
+	if err := validateAmneziaWGComponentDevices(devices); err != nil {
+		return result, err
+	}
+	installedMetadata, err := os.ReadFile(amneziaWGMetadataPath)
+	if err != nil {
+		return result, err
+	}
+	if amneziaWGDeploymentCurrent(installedMetadata) {
+		return result, errors.New("AmneziaWG deployment is already current")
 	}
 	if _, err := os.Stat(amneziaWGUpdateSnapshotPath); err == nil {
 		return result, errors.New("an AmneziaWG component update is already awaiting completion")
@@ -264,7 +277,7 @@ func prepareAmneziaWGComponentUpdate(devices []amneziaWGComponentDevice) (result
 		return result, err
 	}
 	snapshot := amneziaWGComponentUpdateSnapshot{
-		Token: token, Devices: devices, Profiles: profiles, PreviousConfig: previousConfig, PreviousMetadata: previousMetadata,
+		Token: token, Phase: "prepared", Devices: devices, Profiles: profiles, PreviousConfig: previousConfig, PreviousMetadata: previousMetadata,
 		PreviousDesired: previousDesired, DesiredExisted: desiredExisted, PreviousImageID: strings.TrimSpace(previousImageID), CandidateImageID: strings.TrimSpace(candidateImageID),
 	}
 	if err := writeAmneziaWGUpdateSnapshot(snapshot); err != nil {
@@ -292,9 +305,12 @@ func prepareAmneziaWGComponentUpdate(devices []amneziaWGComponentDevice) (result
 		return result, err
 	}
 	if err = waitContainerReady(amneziaWGContainer, 15*time.Second, func() error {
-		_, showErr := run("docker", "exec", amneziaWGContainer, "awg", "show", amneziaWGInterface)
-		return showErr
+		return verifyAmneziaWGPeerConfiguration(candidateConfig)
 	}); err != nil {
+		return result, err
+	}
+	snapshot.Phase = "ready"
+	if err = writeAmneziaWGUpdateSnapshot(snapshot); err != nil {
 		return result, err
 	}
 	keepCandidate = true
@@ -308,6 +324,9 @@ func rollbackAmneziaWGComponentUpdateLocked(token string) error {
 	}
 	if token == "" || token != snapshot.Token {
 		return errors.New("AmneziaWG rollback token does not match")
+	}
+	if snapshot.Phase == "committed" {
+		return errors.New("AmneziaWG profiles are committed; retry Update to finish cleanup")
 	}
 	var failures []error
 	if err := removeContainersStrict(amneziaWGContainer); err != nil {
@@ -363,25 +382,88 @@ func commitAmneziaWGComponentUpdate(token string) error {
 	if token == "" || token != snapshot.Token {
 		return errors.New("AmneziaWG commit token does not match")
 	}
-	if _, err := run("docker", "image", "tag", snapshot.PreviousImageID, amneziaWGUpdateRollbackImage); err != nil {
-		return fmt.Errorf("preserve the previous AmneziaWG image for commit rollback: %w", err)
+	return finalizeAmneziaWGDeployment(snapshot, amneziaWGFinalizeOps{
+		verify: func() error {
+			actual, err := dockerCommand("inspect", "--format", "{{.Image}}", amneziaWGContainer)
+			if err != nil || strings.TrimSpace(actual) != snapshot.CandidateImageID {
+				return errors.New("running AmneziaWG image does not match the candidate")
+			}
+			configuration, err := os.ReadFile(amneziaWGServerPath)
+			if err != nil {
+				return err
+			}
+			return verifyAmneziaWGPeerConfiguration(configuration)
+		},
+		tag:  func(image, tag string) error { _, err := dockerCommand("image", "tag", image, tag); return err },
+		save: writeAmneziaWGUpdateSnapshot,
+		cleanup: func() error {
+			if err := removeImagesStrict(amneziaWGUpdateImage, amneziaWGUpdateRollbackImage); err != nil {
+				return err
+			}
+			return os.Remove(amneziaWGUpdateSnapshotPath)
+		},
+	})
+}
+
+type amneziaWGFinalizeOps struct {
+	verify  func() error
+	tag     func(string, string) error
+	save    func(amneziaWGComponentUpdateSnapshot) error
+	cleanup func() error
+}
+
+func finalizeAmneziaWGDeployment(snapshot amneziaWGComponentUpdateSnapshot, ops amneziaWGFinalizeOps) error {
+	if snapshot.Phase != "ready" && snapshot.Phase != "committed" {
+		return errors.New("AmneziaWG candidate has not passed verification")
 	}
-	if _, err := run("docker", "image", "tag", amneziaWGUpdateImage, "vpn-panel-amneziawg:locked"); err != nil {
+	if err := ops.verify(); err != nil {
 		return err
 	}
-	if err := removeImagesStrict(amneziaWGUpdateImage); err != nil {
+	if snapshot.Phase == "ready" {
+		if err := ops.tag(snapshot.PreviousImageID, amneziaWGUpdateRollbackImage); err != nil {
+			return err
+		}
+		if err := ops.tag(snapshot.CandidateImageID, "vpn-panel-amneziawg:locked"); err != nil {
+			return err
+		}
+		// Profile publication precedes this call. Persist the commit decision
+		// before deleting rollback resources; cleanup failures must roll forward.
+		snapshot.Phase = "committed"
+		if err := ops.save(snapshot); err != nil {
+			return err
+		}
+	}
+	return ops.cleanup()
+}
+
+func verifyAmneziaWGPeerConfiguration(configuration []byte) error {
+	want, err := amneziaWGConfigPeers(string(configuration))
+	if err != nil {
 		return err
 	}
-	if err := removeImagesStrict(amneziaWGUpdateRollbackImage); err != nil {
+	dump, err := defaultAmneziaWGRuntimeAPI().dump()
+	if err != nil {
 		return err
 	}
-	return os.Remove(amneziaWGUpdateSnapshotPath)
+	actual, err := amneziaWGDumpPeers(dump)
+	if err != nil {
+		return err
+	}
+	if !sameAmneziaWGPeers(want, actual) {
+		return errors.New("running AmneziaWG peers do not match the candidate")
+	}
+	return nil
 }
 
 func currentAmneziaWGComponentUpdateResult() (amneziaWGComponentUpdateResult, error) {
+	amneziaWGCredentialMu.Lock()
+	defer amneziaWGCredentialMu.Unlock()
 	snapshot, err := readAmneziaWGUpdateSnapshot()
 	if err != nil {
 		return amneziaWGComponentUpdateResult{}, err
+	}
+	if snapshot.Phase != "ready" && snapshot.Phase != "committed" {
+		return amneziaWGComponentUpdateResult{}, errors.Join(errors.New("interrupted AmneziaWG replacement; retry Update after recovery"), rollbackAmneziaWGComponentUpdateLocked(snapshot.Token))
 	}
 	return amneziaWGComponentUpdateResult{Token: snapshot.Token, Devices: snapshot.Devices, Profiles: snapshot.Profiles}, nil
 }

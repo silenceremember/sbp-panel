@@ -521,14 +521,16 @@ func TestGroupAccessStateAndExactExpiration(t *testing.T) {
 
 func TestGroupProtocolTrafficUsesCurrentMonthAndSumsProviders(t *testing.T) {
 	s := testStore(t)
+	month := time.Now().UTC().Format("2006-01")
+	nextMonth := time.Now().UTC().AddDate(0, 0, 32).Format("2006-01")
 	groupID, err := s.CreateGroup("Family", 30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetGroupProtocolTraffic(groupID, "bypass-wb", "2026-08", 100, 200); err != nil {
+	if err := s.SetGroupProtocolTraffic(groupID, "bypass-wb", month, 100, 200); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetGroupProtocolTraffic(groupID, "bypass-vk", "2026-08", 30, 40); err != nil {
+	if err := s.SetGroupProtocolTraffic(groupID, "bypass-vk", month, 30, 40); err != nil {
 		t.Fatal(err)
 	}
 	groups, err := s.ListGroups()
@@ -538,11 +540,11 @@ func TestGroupProtocolTrafficUsesCurrentMonthAndSumsProviders(t *testing.T) {
 	if len(groups) != 1 || groups[0].RXBytes != 130 || groups[0].TXBytes != 240 {
 		t.Fatalf("unexpected group traffic: %#v", groups)
 	}
-	if err := s.SetGroupProtocolTraffic(groupID, "bypass-wb", "2026-09", 5, 7); err != nil {
+	if err := s.SetGroupProtocolTraffic(groupID, "bypass-wb", nextMonth, 5, 7); err != nil {
 		t.Fatal(err)
 	}
 	var oldRows, rx, tx int64
-	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM traffic_current WHERE scope_type='group' AND scope_id=? AND month_key='2026-08'`, groupID).Scan(&oldRows); err != nil {
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM traffic_current WHERE scope_type='group' AND scope_id=? AND month_key=?`, groupID, month).Scan(&oldRows); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DB.QueryRow(`SELECT rx_bytes,tx_bytes FROM traffic_current WHERE scope_type='group' AND scope_id=? AND protocol='all'`, groupID).Scan(&rx, &tx); err != nil {

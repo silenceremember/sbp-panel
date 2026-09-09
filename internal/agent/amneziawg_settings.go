@@ -39,8 +39,6 @@ var amneziaWGSettingOrder = []string{
 	"HeaderProtectionKey", "RandomTrailers", "DisableCookies",
 }
 
-var amneziaWG3SettingOrder = amneziaWGSettingOrder[11:]
-
 func defaultAmneziaWGServerSettingsContent() string {
 	var result strings.Builder
 	for _, key := range amneziaWGSettingOrder {
@@ -56,14 +54,11 @@ func canonicalAmneziaWGServerSettings(settings amneziaWGServerSettings) string {
 		settings.Jc, settings.Jmin, settings.Jmax, settings.S1, settings.S2, settings.S3, settings.S4,
 		settings.H1, settings.H2, settings.H3, settings.H4,
 	)
-	if strings.TrimSpace(settings.HeaderProtectionKey) == "" {
-		return base
-	}
 	return base + fmt.Sprintf("HeaderProtectionKey = %s\nRandomTrailers = %s\nDisableCookies = %s\n", settings.HeaderProtectionKey, settings.RandomTrailers, settings.DisableCookies)
 }
 
 func amneziaWGClientSettings(settings amneziaWGServerSettings) string {
-	return canonicalAmneziaWGServerSettings(settings) + "I1 = " + amneziaWG2DefaultI1 + "\n"
+	return canonicalAmneziaWGServerSettings(settings) + "I1 = " + amneziaWGDefaultI1 + "\n"
 }
 
 func amneziaWGSettingsFromGenerated(generated generatedAmneziaWGSettings) (amneziaWGServerSettings, error) {
@@ -71,64 +66,53 @@ func amneziaWGSettingsFromGenerated(generated generatedAmneziaWGSettings) (amnez
 }
 
 func parseAmneziaWGHeaderRange(value string) (uint32, uint32, error) {
-	left, right, ok := strings.Cut(strings.TrimSpace(value), "-")
-	if !ok {
-		return 0, 0, errors.New("header range must use minimum-maximum")
+	left, right, ranged := strings.Cut(strings.TrimSpace(value), "-")
+	if !ranged {
+		right = left
 	}
-	minimum, err := strconv.ParseUint(strings.TrimSpace(left), 10, 31)
+	minimum, err := strconv.ParseUint(strings.TrimSpace(left), 10, 32)
 	if err != nil {
-		return 0, 0, errors.New("header range minimum is invalid")
+		return 0, 0, errors.New("header minimum is invalid")
 	}
-	maximum, err := strconv.ParseUint(strings.TrimSpace(right), 10, 31)
-	if err != nil {
-		return 0, 0, errors.New("header range maximum is invalid")
-	}
-	if minimum < 5 || minimum >= maximum || maximum >= uint64(amneziaWGHeaderLimit) {
-		return 0, 0, fmt.Errorf("header range must satisfy 5 <= minimum < maximum < %d", amneziaWGHeaderLimit)
+	maximum, err := strconv.ParseUint(strings.TrimSpace(right), 10, 32)
+	if err != nil || minimum > maximum {
+		return 0, 0, errors.New("header maximum must be at least its minimum")
 	}
 	return uint32(minimum), uint32(maximum), nil
 }
 
 func validateAmneziaWGServerSettings(settings amneziaWGServerSettings) error {
-	if settings.Jc < 4 || settings.Jc >= 7 {
+	if settings.Jc < 4 || settings.Jc > 6 {
 		return errors.New("Jc must be between 4 and 6")
 	}
 	if settings.Jmin < 0 || settings.Jmin > 1280 || settings.Jmax <= settings.Jmin || settings.Jmax > 1280 {
 		return errors.New("Jmin and Jmax must satisfy 0 <= Jmin < Jmax <= 1280")
 	}
-	awg3 := strings.TrimSpace(settings.HeaderProtectionKey) != ""
-	if awg3 {
-		if settings.S1 < 12 || settings.S1 >= 150 || settings.S2 < 12 || settings.S2 >= 150 || settings.S3 < 12 || settings.S3 >= 64 || settings.S4 < 12 || settings.S4 >= 20 {
-			return errors.New("AWG 3.1 requires S1/S2 to be 12-149, S3 to be 12-63, and S4 to be 12-19")
+	paddings := []int{settings.S1, settings.S2, settings.S3, settings.S4}
+	for _, value := range paddings {
+		if value < 12 || value > 1280 {
+			return errors.New("AWG 3.1 padding S1-S4 must be between 12 and 1280")
 		}
-	} else if settings.S1 < 15 || settings.S1 >= 150 || settings.S2 < 15 || settings.S2 >= 150 || settings.S3 < 0 || settings.S3 >= 64 || settings.S4 < 0 || settings.S4 >= 20 {
-		return errors.New("S1/S2 must be 15-149, S3 must be 0-63, and S4 must be 0-19")
-	}
-	values := []int{settings.S1, settings.S2, settings.S3, settings.S4}
-	for index, value := range values {
-		for _, other := range values[index+1:] {
-			if value == other {
-				return errors.New("S1, S2, S3, and S4 must be distinct")
-			}
+		if settings.RandomTrailers == "on" && value != settings.S1 {
+			return errors.New("RandomTrailers requires equal S1-S4 to avoid packet misclassification")
 		}
-	}
-	if settings.S1+148 == settings.S2+92 || settings.S1+148 == settings.S3+64 || settings.S2+92 == settings.S3+64 {
-		return errors.New("S1, S2, and S3 produce colliding handshake sizes")
 	}
 	headers := []string{settings.H1, settings.H2, settings.H3, settings.H4}
-	previousMaximum := uint32(0)
+	var ranges [4][2]uint32
 	for index, header := range headers {
-		minimum, maximum, err := parseAmneziaWGHeaderRange(header)
+		low, high, err := parseAmneziaWGHeaderRange(header)
 		if err != nil {
 			return fmt.Errorf("H%d: %w", index+1, err)
 		}
-		if index > 0 && minimum <= previousMaximum {
-			return errors.New("H1-H4 ranges must be ordered and non-overlapping")
+		if settings.RandomTrailers == "on" && low != high {
+			return errors.New("RandomTrailers requires single-value H1-H4")
 		}
-		previousMaximum = maximum
-	}
-	if !awg3 {
-		return nil
+		for _, previous := range ranges[:index] {
+			if low <= previous[1] && previous[0] <= high {
+				return errors.New("H1-H4 must not overlap")
+			}
+		}
+		ranges[index] = [2]uint32{low, high}
 	}
 	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(settings.HeaderProtectionKey))
 	if err != nil || len(key) != 32 {
@@ -224,14 +208,7 @@ func parseAmneziaWGServerSettings(content string, defaults *amneziaWGServerSetti
 		}
 	}
 	if defaults == nil {
-		required := amneziaWGSettingOrder[:11]
-		for _, key := range amneziaWG3SettingOrder {
-			if seen[key] {
-				required = amneziaWGSettingOrder
-				break
-			}
-		}
-		for _, key := range required {
+		for _, key := range amneziaWGSettingOrder {
 			if !seen[key] {
 				return amneziaWGServerSettings{}, fmt.Errorf("%s is missing", key)
 			}
@@ -369,19 +346,11 @@ func amneziaWGConfigurationHasPeers(configuration string) bool {
 }
 
 func parseAmneziaWGServerSettingsWithDefaults(content string) (amneziaWGServerSettings, error) {
-	var lastErr error
-	for range amneziaWGParameterAttempts {
-		defaults, err := generatedAmneziaWGServerSettings()
-		if err != nil {
-			return amneziaWGServerSettings{}, err
-		}
-		settings, err := parseAmneziaWGServerSettings(content, &defaults)
-		if err == nil {
-			return settings, nil
-		}
-		lastErr = err
+	defaults, err := generatedAmneziaWGServerSettings()
+	if err != nil {
+		return amneziaWGServerSettings{}, err
 	}
-	return amneziaWGServerSettings{}, lastErr
+	return parseAmneziaWGServerSettings(content, &defaults)
 }
 
 func amneziaWGClientOnlySettings(shared string) string {
@@ -453,7 +422,7 @@ func applyInstalledAmneziaWGSettings(settings amneziaWGServerSettings, ops amnez
 	}
 	clientOnly := amneziaWGClientOnlySettings(metadata["shared"])
 	if clientOnly == "" {
-		clientOnly = "I1 = " + amneziaWG2DefaultI1 + "\n"
+		clientOnly = "I1 = " + amneziaWGDefaultI1 + "\n"
 	}
 	metadata["shared"] = canonical + clientOnly
 	nextMetadata, err := json.MarshalIndent(metadata, "", "  ")

@@ -29,6 +29,12 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Test
         run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Check JavaScript
+        run: |
+          node --check internal/panel/web/app.js
+          node --check internal/panel/web/check.js
       - name: Verify third-party notices
         shell: bash
         run: |
@@ -151,13 +157,15 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          version="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' internal/buildinfo/buildinfo.go)"
           prerelease="$(sed -n 's/.*Prerelease[[:space:]]*=[[:space:]]*\(true\|false\).*/\1/p' internal/buildinfo/buildinfo.go)"
+          tag="v${version}"
           release_flags=(--latest)
           if [ "${prerelease}" = true ]; then
             release_flags=(--prerelease --latest=false)
           fi
-          gh release create "${GITHUB_REF_NAME}" \
-            "dist/sbp-panel-${GITHUB_REF_NAME#v}-linux-amd64.zip" \
+          gh release create "${tag}" \
+            "dist/sbp-panel-${version}-linux-amd64.zip" \
             "dist/sbp-panel-update.json" \
-            --verify-tag --notes-file "dist/release-notes.md" --title "SBP Panel ${GITHUB_REF_NAME}" \
+            --verify-tag --notes-file "dist/release-notes.md" --title "SBP Panel ${tag}" \
             "${release_flags[@]}"

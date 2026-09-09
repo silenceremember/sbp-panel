@@ -714,11 +714,14 @@ func componentStates(d Discovery, bbr bool) []Component {
 	awgManaged := names["amnezia-awg2"] && fileExists("/opt/vpn-panel-managed/amneziawg/awg/awg0.conf") && awgOwned
 	awgExternal := !awgManaged && hasLike("amnezia-awg")
 	awgNote := ""
-	awgProtocol := "3.1"
+	awgVersionText := "3.1 (engine " + awgVersion + ")"
+	awgNeedsUpdate := false
 	if awgManaged {
-		if body, err := os.ReadFile(amneziaWGServerPath); err == nil && !strings.Contains(string(body), "HeaderProtectionKey =") {
-			awgProtocol = "2.0"
-			awgNote = "A component update to AmneziaWG 3.1 is available and will rotate every server and device key."
+		metadata, metadataErr := os.ReadFile(amneziaWGMetadataPath)
+		awgNeedsUpdate = metadataErr != nil || !amneziaWGDeploymentCurrent(metadata) || amneziaWGComponentUpdatePending()
+		awgVersionText = amneziaWGInstalledVersion(metadata)
+		if awgNeedsUpdate {
+			awgNote = "Update the engine and configuration, then import the newly issued device profiles."
 		}
 	}
 	if awgExternal {
@@ -742,7 +745,7 @@ func componentStates(d Discovery, bbr bool) []Component {
 		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal && !dockerComposePresent, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0 && !dockerComposePresent, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", ProfileVersion: "26.3.27", ProfileGeneration: 1, Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", ProfileVersion: "26.3.27", ProfileGeneration: 1, Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
-		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, CanUpdate: awgManaged && awgProtocol != "3.1", Version: awgProtocol + " (engine " + awgVersion + ")", ProfileVersion: awgProtocol, ProfileGeneration: amneziaWGProfileGeneration, Description: "Provides an AmneziaWG 3.1 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
+		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, CanUpdate: awgManaged && awgNeedsUpdate, Version: awgVersionText, ProfileVersion: "3.1", ProfileGeneration: amneziaWGProfileGeneration, Description: "Provides an AmneziaWG 3.1 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
 		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated WB Stream connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: wbNote},
 		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated Yandex Telemost connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
 		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated DION connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: dionNote},
@@ -1797,11 +1800,11 @@ func uninstallComponent(id string, c config.Config) (string, error) {
 const xrayImage = "ghcr.io/xtls/xray-core@sha256:592ec4d11f656db95598d01e76dbcc6e002d67360b96a5436500a938230f52c7"
 const xrayRealityServerName = "www.googletagmanager.com"
 const xrayRealityTarget = xrayRealityServerName + ":443"
-const awgVersion = "3.1.20260814"
-const awgBaseImage = "amneziavpn/amneziawg-go:" + awgVersion + "@sha256:4450928744b051589bb3ba5cf6dd0cd8d7dc470b9432dc32d03d5ff5ede11b7a"
+const awgVersion = "3.1.20260828"
+const awgBaseImage = "amneziavpn/amneziawg-go:" + awgVersion + "@sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cbd8c0cb4e2e3759b12b72"
 const awgPort = 48692
 const amneziaWGClientMTU = 1280
-const amneziaWGProfileGeneration = 3
+const amneziaWGProfileGeneration = 4
 const amneziaWGDockerfile = "FROM " + awgBaseImage + "\nRUN apk add --no-cache bash dumb-init iptables\nCOPY start.sh /opt/amnezia/start.sh\nRUN chmod 755 /opt/amnezia/start.sh\nENTRYPOINT [\"dumb-init\",\"/opt/amnezia/start.sh\"]\n"
 const amneziaWGStartScript = `#!/bin/bash
 set -e
@@ -2131,10 +2134,12 @@ func installAmneziaWG() (string, error) {
 		return "", err
 	}
 	metadata, _ := json.MarshalIndent(map[string]string{
-		"server_public": strings.TrimSpace(serverPublic),
-		"endpoint":      fmt.Sprintf("%s:%d", publicServerAddress(), awgPort),
-		"shared":        amneziaWGClientSettings(serverSettings),
-		"protocol":      "3.1",
+		"server_public":       strings.TrimSpace(serverPublic),
+		"endpoint":            fmt.Sprintf("%s:%d", publicServerAddress(), awgPort),
+		"shared":              amneziaWGClientSettings(serverSettings),
+		"protocol":            "3.1",
+		"engine":              awgVersion,
+		"deployment_revision": amneziaWGDeploymentRevision,
 	}, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "server.json"), metadata, 0600); err != nil {
 		return "", err
@@ -3288,6 +3293,10 @@ func Run(configPath string) error {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if amneziaWGComponentUpdatePending() {
+			writeJSON(w, map[string]any{"ok": true, "job": installJob{ComponentID: "amneziawg", Operation: "update", Status: "pending"}})
+			return
+		}
 		if err := inst.startAmneziaWGUpdate(input.Devices); err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, errLifecycleBusy) {
@@ -3300,7 +3309,7 @@ func Run(configPath string) error {
 	})
 	mux.HandleFunc("GET /v1/components/amneziawg/update", func(w http.ResponseWriter, r *http.Request) {
 		job := inst.get("amneziawg")
-		if amneziaWGComponentUpdatePending() && (job.Operation == "update" && job.Status == "done" || job.Status == "idle") {
+		if amneziaWGComponentUpdatePending() && job.Status != "running" && job.Status != "queued" {
 			result, err := currentAmneziaWGComponentUpdateResult()
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)

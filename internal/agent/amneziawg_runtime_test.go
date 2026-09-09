@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -213,7 +214,15 @@ func TestUpdateAmneziaWGConfigRejectsInvalidCandidateBeforeMutation(t *testing.T
 
 func TestAmneziaWGClientParametersUseMetadataBeforeProvisioning(t *testing.T) {
 	dir := t.TempDir()
-	metadata := `{"server_public":"server-public","endpoint":"192.0.2.1:48692","shared":"Jc = 5\nJmin = 10\nJmax = 50\nS1 = 119\nS2 = 58\nS3 = 48\nS4 = 5\nH1 = 1001-1100\nH2 = 2001-2100\nH3 = 3001-3100\nH4 = 4001-4100\nI1 = <r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>\n"}`
+	settings, err := newAmneziaWG3Settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(map[string]string{"server_public": "server-public", "endpoint": "192.0.2.1:48692", "shared": settings.client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := string(encoded)
 	if err := os.WriteFile(filepath.Join(dir, "server.json"), []byte(metadata), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +230,7 @@ func TestAmneziaWGClientParametersUseMetadataBeforeProvisioning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if public != "server-public" || endpoint != "192.0.2.1:48692" || !strings.Contains(shared, "S4 = 5") || !strings.Contains(shared, "H4 = 4001-4100") || !strings.Contains(shared, "I1 = "+amneziaWG2DefaultI1) {
+	if public != "server-public" || endpoint != "192.0.2.1:48692" || !strings.Contains(shared, "S4 = 12") || !strings.Contains(shared, "H4 = 4") || !strings.Contains(shared, "I1 = "+amneziaWGDefaultI1) {
 		t.Fatalf("parameters = %q, %q, %q", public, endpoint, shared)
 	}
 }
@@ -264,7 +273,11 @@ func TestPinnedAmneziaWGSyncConfChangesPeersWithoutRestart(t *testing.T) {
 	peerBPublic := dockerAmneziaWGTestCommand(t, peerBPrivate+"\n", "run", "--rm", "-i", "--entrypoint", "awg", awgBaseImage, "pubkey")
 	peerBPSK := dockerAmneziaWGTestCommand(t, "", "run", "--rm", "--entrypoint", "awg", awgBaseImage, "genpsk")
 
-	interfaceConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nListenPort = 48692\nJc = 5\nJmin = 10\nJmax = 50\nS1 = 119\nS2 = 58\nS3 = 48\nS4 = 5\nH1 = 1001-1100\nH2 = 2001-2100\nH3 = 3001-3100\nH4 = 4001-4100\n", serverPrivate)
+	settings, err := newAmneziaWG3Settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	interfaceConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.8.1.1/24\nMTU = 1280\nListenPort = 48692\n%s", serverPrivate, settings.server)
 	peerAConfig := fmt.Sprintf("\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.8.1.2/32\n", peerAPublic, peerAPSK)
 	peerBConfig := fmt.Sprintf("\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.8.1.3/32\n", peerBPublic, peerBPSK)
 	dir := t.TempDir()
@@ -294,6 +307,21 @@ func TestPinnedAmneziaWGSyncConfChangesPeersWithoutRestart(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 	}
 
+	serverPublic := dockerAmneziaWGTestCommand(t, serverPrivate+"\n", "run", "--rm", "-i", "--entrypoint", "awg", awgBaseImage, "pubkey")
+	serverIP := dockerAmneziaWGTestCommand(t, "", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container)
+	clientDir := t.TempDir()
+	clientConfig := fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.8.1.2/32\nMTU = 1280\n%s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = 10.8.1.1/32\nEndpoint = %s:48692\n", peerAPrivate, settings.client, serverPublic, peerAPSK, serverIP)
+	if err := os.WriteFile(filepath.Join(clientDir, "awg0.conf"), []byte(clientConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	clientContainer := container + "-client"
+	defer exec.Command("docker", "rm", "-f", clientContainer).Run()
+	dockerAmneziaWGTestCommand(t, "", "run", "-d", "--name", clientContainer, "--privileged", "--log-driver", "none", "-v", clientDir+":/config", awgBaseImage, "bash", "-c", "set -e; awg-quick up /config/awg0.conf; exec tail -f /dev/null")
+	verifyTraffic := func() {
+		t.Helper()
+		dockerAmneziaWGTestCommand(t, "", "exec", clientContainer, "bash", "-c", "for attempt in {1..15}; do ping -c 1 -W 1 10.8.1.1 >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1")
+	}
+	verifyTraffic()
 	if err := os.WriteFile(path, []byte(interfaceConfig+peerAConfig+peerBConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -318,4 +346,5 @@ func TestPinnedAmneziaWGSyncConfChangesPeersWithoutRestart(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(inspect)) != "0" {
 		t.Fatalf("AmneziaWG container restarted while changing peers: restartCount=%q err=%v", inspect, err)
 	}
+	verifyTraffic()
 }

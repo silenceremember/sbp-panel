@@ -3,6 +3,13 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.5.2] - 2026-09-09
+
+- Updated the pinned AmneziaWG engine to 3.1.20260828 and aligned generated profiles with fixed H1-H4 and equal S1-S4 compatibility defaults, Jc 6, and MTU 1280.
+- Fixed component Update for existing AWG 3.1 deployments by tracking the installed engine and configuration revision instead of only the protocol version.
+- Made replacement verification, interrupted publication recovery, and post-commit cleanup retryable while preserving original profiles for rollback.
+- After updating SBP, run Components > AmneziaWG > Update and import the newly issued profiles on every device.
+
 ## [1.5.1] - 2026-08-29
 
 - Fixed AmneziaWG QR import by encoding the native profile expected by its client while keeping the existing `vpn://` clipboard format.
