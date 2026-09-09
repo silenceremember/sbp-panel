@@ -3,6 +3,11 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.7.5] - 2026-09-09
+
+- Editing a profile or group keeps the current page position after saving.
+- Closing dialogs returns keyboard focus without scrolling; unchanged cards and device rows stay in place during refresh.
+
 ## [1.7.4] - 2026-09-09
 
 - Made QR notifications smaller with evenly spaced actions in one row, including Amnezia QR.

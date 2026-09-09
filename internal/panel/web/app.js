@@ -46,7 +46,7 @@ document.querySelector('#dialog')?.addEventListener('close', () => {
   document.documentElement.classList.remove('dialog-open');
   document.body.classList.remove('dialog-open');
   app.inert = false;
-  if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus();
+  if (dialogReturnFocus?.isConnected) dialogReturnFocus.focus({preventScroll: true});
   dialogReturnFocus = null;
 });
 
@@ -547,8 +547,12 @@ async function refreshGroups() {
   state = nextState;
   setupServerLink();
   document.querySelector('#configuration').onclick = configurationDialog;
+  const scrollPosition = {left: window.scrollX, top: window.scrollY};
+  const focusedControl = document.activeElement;
   renderGroups(indexDevices(nextState.devices, nextState.groups));
   if (lastMetrics) applyGroupMetrics(lastMetrics);
+  if (focusedControl?.isConnected) focusedControl.focus({preventScroll: true});
+  window.scrollTo(scrollPosition);
   return true;
 }
 
@@ -916,6 +920,7 @@ function renderGroups(prefetchedDevices = null) {
   root.querySelector('.card.muted')?.remove();
   const existing = new Map(Array.from(root.querySelectorAll('.group-panel[data-group-id]')).map(card => [Number(card.dataset.groupId), card]));
   const active = new Set();
+  let nextCard = root.firstElementChild;
   for (const group of state.groups) {
     const groupID = Number(group.id);
     active.add(groupID);
@@ -981,7 +986,8 @@ function renderGroups(prefetchedDevices = null) {
         });
       } catch (e) { notifyError(e); }
     };
-    root.append(card);
+    if (card !== nextCard) root.insertBefore(card, nextCard);
+    nextCard = card.nextElementSibling;
     renderDevices(card.querySelector('.devices'), prefetchedDevices?.get(groupID)?.value?.devices || []);
   }
   for (const [groupID, card] of existing) {
@@ -1126,6 +1132,7 @@ function renderDevices(root, devices = []) {
   root.querySelector('tr[data-empty]')?.remove();
   const existing = new Map(Array.from(root.querySelectorAll('tr[data-device-id]')).map(row => [Number(row.dataset.deviceId), row]));
   const active = new Set();
+  let nextRow = root.firstElementChild;
   for (const device of devices) {
     const deviceID = Number(device.id);
     active.add(deviceID);
@@ -1179,7 +1186,8 @@ function renderDevices(root, devices = []) {
         });
       } catch (e) { notifyError(e); }
     };
-    root.append(row);
+    if (row !== nextRow) root.insertBefore(row, nextRow);
+    nextRow = row.nextElementSibling;
   }
   for (const [deviceID, row] of existing) {
     if (!active.has(deviceID)) row.remove();
