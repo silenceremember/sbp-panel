@@ -3,7 +3,7 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
-## [1.6.3] - 2026-09-09
+## [1.7.0] - 2026-09-09
 
 - Replaced common edit, remove, copy, settings, refresh and sign-out buttons with compact SVG icons and clear tooltips. Install, Update and confirmation actions keep their text.
 - Added Export codes for each group: download a Markdown file with connection names, codes and the group's check link at the end.
