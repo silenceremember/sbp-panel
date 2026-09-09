@@ -68,11 +68,12 @@ func (variant xrayVariant) runtimeUser(id string) xrayRuntimeUser {
 }
 
 type xrayClientMetadata struct {
-	Server    string `json:"server"`
-	PublicKey string `json:"public_key"`
-	ShortID   string `json:"short_id"`
-	SNI       string `json:"sni,omitempty"`
-	Path      string `json:"path,omitempty"`
+	Server      string `json:"server"`
+	PublicKey   string `json:"public_key"`
+	ShortID     string `json:"short_id"`
+	SNI         string `json:"sni,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Path        string `json:"path,omitempty"`
 }
 
 func (variant xrayVariant) loadClientMetadata() (xrayClientMetadata, error) {
@@ -83,6 +84,14 @@ func (variant xrayVariant) loadClientMetadata() (xrayClientMetadata, error) {
 	var metadata xrayClientMetadata
 	if json.Unmarshal(body, &metadata) != nil {
 		return xrayClientMetadata{}, errors.New("REALITY parameters next to the Xray configuration are invalid")
+	}
+	settings, exists, err := loadDesiredXrayRealitySNIState(variant.Method)
+	if err != nil {
+		return metadata, err
+	}
+	if exists {
+		metadata.SNI = settings.DefaultSNI
+		metadata.Fingerprint = settings.Fingerprint
 	}
 	return metadata, nil
 }
@@ -101,20 +110,23 @@ func xrayCredentialLink(variant xrayVariant, id, name string, metadata xrayClien
 	if metadata.SNI == "" {
 		metadata.SNI = xrayRealityServerName
 	}
+	if metadata.Fingerprint == "" {
+		metadata.Fingerprint = "chrome"
+	}
 	label := escapeVLESSComponent(name)
 	base := fmt.Sprintf("vless://%s@%s:%d?encryption=none", id, metadata.Server, variant.PublicPort)
 	if variant.Flow != "" {
 		base += "&flow=" + escapeVLESSComponent(variant.Flow)
 	}
 	base += "&security=reality&sni=" + escapeVLESSComponent(metadata.SNI) +
-		"&fp=chrome&pbk=" + escapeVLESSComponent(metadata.PublicKey) +
+		"&fp=" + escapeVLESSComponent(metadata.Fingerprint) + "&pbk=" + escapeVLESSComponent(metadata.PublicKey) +
 		"&sid=" + escapeVLESSComponent(metadata.ShortID) +
 		"&type=" + escapeVLESSComponent(variant.Network)
 	if variant.Network == "xhttp" {
 		if !strings.HasPrefix(metadata.Path, "/") || len(metadata.Path) < 2 {
 			return "", errors.New("the managed XHTTP path is missing or invalid")
 		}
-		base += "&path=" + escapeVLESSComponent(metadata.Path)
+		base += "&mode=auto&path=" + escapeVLESSComponent(metadata.Path)
 	} else {
 		base += "&headerType=none"
 	}
@@ -142,6 +154,9 @@ func renderExistingXrayCredential(variant xrayVariant, name, credential string) 
 	metadata, err := variant.loadClientMetadata()
 	if err != nil {
 		return "", err
+	}
+	if existing, err := url.Parse(credential); err == nil && existing.Query().Get("fp") != "" {
+		metadata.Fingerprint = existing.Query().Get("fp")
 	}
 	return xrayCredentialLink(variant, id, name, metadata)
 }

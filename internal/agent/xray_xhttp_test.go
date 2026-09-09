@@ -114,6 +114,7 @@ func TestXrayXHTTPCredentialLink(t *testing.T) {
 }
 
 func TestRenderExistingXrayCredentialUsesCurrentMetadataAndPreservesUUID(t *testing.T) {
+	isolateComponentSettings(t)
 	for _, test := range []struct {
 		name    string
 		variant xrayVariant

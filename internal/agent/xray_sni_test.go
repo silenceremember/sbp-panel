@@ -2,16 +2,15 @@ package agent
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
 func testXraySNIVariant(t *testing.T, base xrayVariant) (xrayVariant, []byte) {
 	t.Helper()
+	isolateComponentSettings(t)
 	variant := base
 	variant.Dir = filepath.Join(t.TempDir(), base.Method)
 	variant.ConfigFile = filepath.Join(variant.Dir, "config.json")
@@ -89,29 +88,6 @@ func TestNormalizeXrayRealitySNI(t *testing.T) {
 	}
 }
 
-func TestDecodeXrayRealitySNIRequestIsBoundedAndExact(t *testing.T) {
-	if got, err := decodeXrayRealitySNIRequest(strings.NewReader(`{"sni":"dl.google.com"}`)); err != nil || got != "dl.google.com" {
-		t.Fatalf("decoded SNI=%q err=%v", got, err)
-	}
-	for _, body := range []string{"", `{"sni":`, `{"sni":"dl.google.com"} trailing`, strings.Repeat("x", 4<<10+1)} {
-		if _, err := decodeXrayRealitySNIRequest(strings.NewReader(body)); err == nil {
-			t.Fatalf("invalid request with %d bytes was accepted", len(body))
-		}
-	}
-}
-
-func TestDecodeXrayRealitySettingsRequestIsBoundedAndComplete(t *testing.T) {
-	target, names, err := decodeXrayRealitySettingsRequest(strings.NewReader(`{"target":"dl.google.com:443","server_names":["www.googletagmanager.com","dl.google.com"]}`))
-	if err != nil || target != "dl.google.com:443" || !reflect.DeepEqual(names, []string{xrayRealityServerName, "dl.google.com"}) {
-		t.Fatalf("decoded target=%q names=%#v err=%v", target, names, err)
-	}
-	for _, body := range []string{"", `{"target":`, strings.Repeat("x", maxXrayRealitySettingsRequestSize+1)} {
-		if _, _, err := decodeXrayRealitySettingsRequest(strings.NewReader(body)); err == nil {
-			t.Fatalf("invalid settings request with %d bytes was accepted", len(body))
-		}
-	}
-}
-
 func TestReplaceXrayRealitySettingsAppliesTargetAndListOnce(t *testing.T) {
 	variant, _ := testXraySNIVariant(t, xhttpXrayVariant)
 	validatedTarget := ""
@@ -120,11 +96,11 @@ func TestReplaceXrayRealitySettingsAppliesTargetAndListOnce(t *testing.T) {
 	ops := testXraySNIOps(func(string) error { validatedConfigs++; return nil }, func(xrayVariant, map[string]any) error { restarts++; return nil })
 	ops.validateTarget = func(target string) error { validatedTarget = target; return nil }
 
-	state, err := mutateXrayRealitySettings(variant, "DL.Google.COM:8443", []string{"dl.google.com", xrayRealityServerName}, ops)
+	state, err := mutateXrayRealitySettings(variant, "DL.Google.COM:8443", []string{"dl.google.com", xrayRealityServerName}, ops, "chrome")
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantNames := []string{xrayRealityServerName, "dl.google.com"}
+	wantNames := []string{"dl.google.com", xrayRealityServerName}
 	if state.Target != "dl.google.com:8443" || !reflect.DeepEqual(state.ServerNames, wantNames) {
 		t.Fatalf("replacement state=%#v", state)
 	}
@@ -137,18 +113,16 @@ func TestReplaceXrayRealitySettingsAppliesTargetAndListOnce(t *testing.T) {
 	}
 }
 
-func TestReplaceXrayRealitySettingsRequiresImmutableDefault(t *testing.T) {
-	variant, before := testXraySNIVariant(t, stableXrayVariant)
-	ops := testXraySNIOps(func(string) error { t.Fatal("invalid replacement was staged"); return nil }, func(xrayVariant, map[string]any) error {
-		t.Fatal("invalid replacement restarted Xray")
-		return nil
-	})
-	if _, err := mutateXrayRealitySettings(variant, "dl.google.com:443", []string{"dl.google.com"}, ops); err == nil || !strings.Contains(err.Error(), "immutable default") {
-		t.Fatalf("missing-default error=%v", err)
+func TestReplaceXrayRealitySettingsAllowsNewDefault(t *testing.T) {
+	variant, _ := testXraySNIVariant(t, stableXrayVariant)
+	ops := testXraySNIOps(func(string) error { return nil }, func(xrayVariant, map[string]any) error { return nil })
+	state, err := mutateXrayRealitySettings(variant, "dl.google.com:443", []string{"dl.google.com"}, ops, "chrome")
+	if err != nil || state.DefaultSNI != "dl.google.com" {
+		t.Fatalf("state=%#v err=%v", state, err)
 	}
-	after, _ := os.ReadFile(variant.ConfigFile)
-	if !reflect.DeepEqual(after, before) {
-		t.Fatal("invalid replacement changed the configuration")
+	metadata, err := variant.loadClientMetadata()
+	if err != nil || metadata.SNI != "dl.google.com" {
+		t.Fatalf("new links would use stale SNI: %#v %v", metadata, err)
 	}
 }
 
@@ -161,7 +135,7 @@ func TestReplaceXrayRealitySettingsSavesDesiredStateBeforeInstall(t *testing.T) 
 	ops.owned = func(string) bool { return false }
 	ops.verifyContainer = func(xrayVariant) error { t.Fatal("unowned container was inspected for replacement"); return nil }
 
-	want, err := mutateXrayRealitySettings(variant, "dl.google.com:8443", []string{xrayRealityServerName, "dl.google.com"}, ops)
+	want, err := mutateXrayRealitySettings(variant, "dl.google.com:8443", []string{xrayRealityServerName, "dl.google.com"}, ops, "chrome")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,148 +146,6 @@ func TestReplaceXrayRealitySettingsSavesDesiredStateBeforeInstall(t *testing.T) 
 	after, _ := os.ReadFile(variant.ConfigFile)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatal("unowned replacement changed the managed configuration")
-	}
-}
-
-func TestAddXrayRealitySNIPreservesDefaultTargetClientsAndMetadata(t *testing.T) {
-	variant, _ := testXraySNIVariant(t, xhttpXrayVariant)
-	metadataBefore, _ := os.ReadFile(variant.MetadataFile)
-	validated := false
-	restarted := false
-	ops := testXraySNIOps(func(path string) error {
-		validated = true
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if !strings.Contains(string(body), "dl.google.com") {
-			return errors.New("staged SNI missing")
-		}
-		return nil
-	}, func(got xrayVariant, root map[string]any) error {
-		restarted = true
-		if got.Method != variant.Method {
-			return errors.New("wrong variant restarted")
-		}
-		return nil
-	})
-
-	state, err := mutateXrayRealitySNI(variant, "DL.Google.COM.", false, ops)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantNames := []string{xrayRealityServerName, "dl.google.com"}
-	if state.DefaultSNI != xrayRealityServerName || !reflect.DeepEqual(state.ServerNames, wantNames) || !validated || !restarted {
-		t.Fatalf("state=%#v validated=%v restarted=%v", state, validated, restarted)
-	}
-	root, _, stored, err := readXrayRealitySNIState(variant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reality, _ := managedXrayRealitySettings(root, variant)
-	if reality["target"] != xrayRealityTarget || !reflect.DeepEqual(stored.ServerNames, wantNames) {
-		t.Fatalf("stored REALITY settings=%#v state=%#v", reality, stored)
-	}
-	inbound, _, _ := managedXrayInbound(root)
-	if clients := inbound["settings"].(map[string]any)["clients"].([]any); len(clients) != 1 {
-		t.Fatalf("clients changed: %#v", clients)
-	}
-	metadataAfter, _ := os.ReadFile(variant.MetadataFile)
-	if !reflect.DeepEqual(metadataAfter, metadataBefore) {
-		t.Fatal("client metadata changed while adding an allowed SNI")
-	}
-}
-
-func TestXrayRealitySNIMutationIsIdempotentAndProtectsDefault(t *testing.T) {
-	variant, before := testXraySNIVariant(t, stableXrayVariant)
-	calls := 0
-	ops := testXraySNIOps(func(string) error { calls++; return nil }, func(xrayVariant, map[string]any) error { calls++; return nil })
-	state, err := mutateXrayRealitySNI(variant, xrayRealityServerName, false, ops)
-	if err != nil || len(state.ServerNames) != 1 || calls != 0 {
-		t.Fatalf("idempotent add=%#v err=%v calls=%d", state, err, calls)
-	}
-	if _, err := mutateXrayRealitySNI(variant, xrayRealityServerName, true, ops); err == nil || !strings.Contains(err.Error(), "cannot be removed") {
-		t.Fatalf("default removal error=%v", err)
-	}
-	after, _ := os.ReadFile(variant.ConfigFile)
-	if !reflect.DeepEqual(after, before) || calls != 0 {
-		t.Fatal("protected or idempotent mutation changed the configuration")
-	}
-}
-
-func TestRemoveAdditionalXrayRealitySNIKeepsDefault(t *testing.T) {
-	variant, _ := testXraySNIVariant(t, stableXrayVariant)
-	ops := testXraySNIOps(func(string) error { return nil }, func(xrayVariant, map[string]any) error { return nil })
-	if _, err := mutateXrayRealitySNI(variant, "dl.google.com", false, ops); err != nil {
-		t.Fatal(err)
-	}
-	state, err := mutateXrayRealitySNI(variant, "dl.google.com", true, ops)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.DefaultSNI != xrayRealityServerName || !reflect.DeepEqual(state.ServerNames, []string{xrayRealityServerName}) {
-		t.Fatalf("state after removal=%#v", state)
-	}
-	_, _, stored, err := readXrayRealitySNIState(variant)
-	if err != nil || !reflect.DeepEqual(stored.ServerNames, []string{xrayRealityServerName}) {
-		t.Fatalf("stored state after removal=%#v err=%v", stored, err)
-	}
-}
-
-func TestXrayRealitySNIRollsBackFailedRestart(t *testing.T) {
-	variant, before := testXraySNIVariant(t, stableXrayVariant)
-	restarts := 0
-	ops := testXraySNIOps(func(string) error { return nil }, func(xrayVariant, map[string]any) error {
-		restarts++
-		if restarts == 1 {
-			return errors.New("new runtime failed")
-		}
-		return nil
-	})
-	if _, err := mutateXrayRealitySNI(variant, "dl.google.com", false, ops); err == nil || !strings.Contains(err.Error(), "previous configuration was restored") {
-		t.Fatalf("rollback result=%v", err)
-	}
-	after, _ := os.ReadFile(variant.ConfigFile)
-	if !reflect.DeepEqual(after, before) || restarts != 2 {
-		t.Fatalf("rollback did not restore bytes or runtime: restarts=%d", restarts)
-	}
-}
-
-func TestXrayRealitySNIValidationFailureDoesNotApply(t *testing.T) {
-	variant, before := testXraySNIVariant(t, stableXrayVariant)
-	restarts := 0
-	ops := testXraySNIOps(func(string) error { return errors.New("invalid staged config") }, func(xrayVariant, map[string]any) error {
-		restarts++
-		return nil
-	})
-	if _, err := mutateXrayRealitySNI(variant, "dl.google.com", false, ops); err == nil || !strings.Contains(err.Error(), "invalid staged config") {
-		t.Fatalf("validation result=%v", err)
-	}
-	after, _ := os.ReadFile(variant.ConfigFile)
-	if !reflect.DeepEqual(after, before) || restarts != 0 {
-		t.Fatal("validation failure changed persistent or runtime state")
-	}
-}
-
-func TestXrayRealitySNISavesDesiredStateBeforeInstall(t *testing.T) {
-	variant, before := testXraySNIVariant(t, stableXrayVariant)
-	originalSettingsDir := componentSettingsDir
-	componentSettingsDir = filepath.Join(t.TempDir(), "settings")
-	t.Cleanup(func() { componentSettingsDir = originalSettingsDir })
-	ops := testXraySNIOps(func(string) error { return nil }, func(xrayVariant, map[string]any) error { return nil })
-	ops.owned = func(string) bool { return false }
-	ops.verifyContainer = func(xrayVariant) error { t.Fatal("unowned container was inspected for mutation"); return nil }
-	state, err := mutateXrayRealitySNI(variant, "dl.google.com", false, ops)
-	if err != nil || len(state.ServerNames) != 2 || state.ServerNames[1] != "dl.google.com" {
-		t.Fatalf("desired mutation result=%#v, %v", state, err)
-	}
-	after, _ := os.ReadFile(variant.ConfigFile)
-	if !reflect.DeepEqual(after, before) {
-		t.Fatal("unowned configuration changed")
-	}
-	saved, _, err := loadDesiredXrayRealitySNIState(variant.Method)
-	if err != nil || !reflect.DeepEqual(saved, state) {
-		t.Fatalf("saved desired state=%#v, %v", saved, err)
 	}
 }
 
@@ -340,45 +172,5 @@ func TestApplyDesiredXrayRealitySNIProjectsSavedListIntoNewConfig(t *testing.T) 
 	}
 	if reality["dest"] != want.Target {
 		t.Fatalf("projected target=%#v", reality["dest"])
-	}
-}
-
-func TestSetXrayRealityTargetValidatesAndPreservesProfiles(t *testing.T) {
-	variant, _ := testXraySNIVariant(t, xhttpXrayVariant)
-	metadataBefore, _ := os.ReadFile(variant.MetadataFile)
-	validated := ""
-	ops := testXraySNIOps(func(string) error { return nil }, func(xrayVariant, map[string]any) error { return nil })
-	ops.validateTarget = func(target string) error { validated = target; return nil }
-	state, err := mutateXrayRealityTarget(variant, "DL.Google.COM:443", ops)
-	if err != nil || state.Target != "dl.google.com:443" || validated != state.Target {
-		t.Fatalf("target state=%#v validated=%q err=%v", state, validated, err)
-	}
-	root, _, stored, err := readXrayRealitySNIState(variant)
-	if err != nil || stored.Target != state.Target {
-		t.Fatalf("stored target=%#v err=%v", stored, err)
-	}
-	reality, _ := managedXrayRealitySettings(root, variant)
-	if reality["target"] != state.Target || reality["dest"] != nil {
-		t.Fatalf("REALITY target fields=%#v", reality)
-	}
-	metadataAfter, _ := os.ReadFile(variant.MetadataFile)
-	if !reflect.DeepEqual(metadataAfter, metadataBefore) {
-		t.Fatal("client metadata changed while updating the target")
-	}
-}
-
-func TestSetXrayRealityTargetProbeFailureDoesNotApply(t *testing.T) {
-	variant, before := testXraySNIVariant(t, stableXrayVariant)
-	ops := testXraySNIOps(func(string) error { return nil }, func(xrayVariant, map[string]any) error {
-		t.Fatal("runtime restarted after a failed target probe")
-		return nil
-	})
-	ops.validateTarget = func(string) error { return errors.New("TLS probe failed") }
-	if _, err := mutateXrayRealityTarget(variant, "dl.google.com:443", ops); err == nil || !strings.Contains(err.Error(), "TLS probe failed") {
-		t.Fatalf("probe failure=%v", err)
-	}
-	after, _ := os.ReadFile(variant.ConfigFile)
-	if !reflect.DeepEqual(after, before) {
-		t.Fatal("failed target probe changed the configuration")
 	}
 }

@@ -1492,7 +1492,8 @@ body.dialog-open::before {
     width: calc(100vw - 20px);
     max-width: calc(100vw - 20px);
     min-width: 0;
-    margin-inline: 10px;
+    margin-inline: 0;
+    left: 50vw;
     padding: 15px;
   }
 
@@ -1561,3 +1562,16 @@ body.dialog-open::before {
     width: calc(100vw - 20px);
   }
 }
+
+@media (max-width: 600px) {
+  input:not([type="checkbox"]), select, textarea { font-size: 16px; }
+  .devices-table, .devices-table tbody, .devices-table tr, .devices-table td { display: block; width: 100%; min-width: 0; }
+  .devices-table thead { display: none; }
+  .devices-table tr { padding: 10px 0; border-top: 1px solid var(--line); }
+  .devices-table td { padding: 5px 14px; border: 0; text-align: left; }
+  .device-actions { justify-content: flex-start; flex-wrap: wrap; }
+  .device-actions button { min-height: 40px; }
+  .notification-qr-actions button, .notification-qr-actions a { min-height: 40px; }
+}
+
+.notification-qr-title { grid-column: 1; overflow-wrap: anywhere; font-size: 13px; }

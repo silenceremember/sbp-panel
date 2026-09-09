@@ -132,6 +132,8 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("DELETE /api/devices/{id}", admin(s.deleteDevice))
 	m.Handle("GET /api/devices/{id}/credential", auth(s.deviceCredential))
 	m.Handle("GET /api/devices/{id}/qr", auth(s.deviceQR))
+	m.Handle("GET /api/configuration", admin(s.configuration))
+	m.Handle("POST /api/configuration/preview", admin(s.configuration))
 	m.Handle("GET /api/discovery", auth(s.discovery))
 	m.Handle("GET /api/metrics", auth(s.metrics))
 	m.Handle("GET /api/bypass/rooms", auth(s.bypassRooms))
@@ -151,10 +153,6 @@ func (s *server) routes(m *http.ServeMux) {
 	m.Handle("POST /api/components/docker/compose", admin(s.dockerCompose))
 	m.Handle("DELETE /api/components/docker/compose", admin(s.dockerCompose))
 	m.Handle("DELETE /api/components/docker/compose/external", admin(s.dockerComposeExternal))
-	m.Handle("GET /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
-	m.Handle("POST /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
-	m.Handle("PUT /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
-	m.Handle("DELETE /api/components/{id}/reality-sni", admin(s.xrayRealitySNI))
 	m.Handle("POST /api/bypass/{provider}/credentials", admin(s.uploadBypass))
 	m.Handle("DELETE /api/bypass/{provider}/credentials", admin(s.clearBypass))
 }
@@ -523,47 +521,12 @@ func (s *server) reconcileGroupAccessLocked(groupID int64) error {
 	if err != nil {
 		return err
 	}
-	if desired {
-		legacy := map[string]string{}
-		for _, device := range devices {
-			if !device.Enabled {
-				continue
-			}
-			if isBypassMethod(device.Method) && device.ProfileGeneration < 1 {
-				legacy[device.Method] = device.Credential
-				continue
-			}
-			if !isBypassMethod(device.Method) || device.ProfileGeneration >= 1 {
-				if err := s.controlCredential(device, true); err != nil {
-					return fmt.Errorf("failed to restore %q: %w", device.Name, err)
-				}
-			}
+	for _, device := range devices {
+		if !device.Enabled {
+			continue
 		}
-		for method, credential := range legacy {
-			if err := s.restoreSharedBypassRoom(groupID, method, credential); err != nil {
-				return fmt.Errorf("failed to restore the %s room: %w", strings.TrimPrefix(method, "bypass-"), err)
-			}
-		}
-	} else {
-		legacy := map[string]bool{}
-		for _, device := range devices {
-			if !device.Enabled {
-				continue
-			}
-			if isBypassMethod(device.Method) && device.ProfileGeneration < 1 {
-				legacy[device.Method] = true
-				continue
-			}
-			if !isBypassMethod(device.Method) || device.ProfileGeneration >= 1 {
-				if err := s.controlCredential(device, false); err != nil {
-					return fmt.Errorf("failed to suspend %q: %w", device.Name, err)
-				}
-			}
-		}
-		for method := range legacy {
-			if err := s.removeBypassRoom(groupID, method, true); err != nil {
-				return fmt.Errorf("failed to suspend the %s room: %w", strings.TrimPrefix(method, "bypass-"), err)
-			}
+		if err := s.controlCredential(device, desired); err != nil {
+			return fmt.Errorf("apply access for %q: %w", device.Name, err)
 		}
 	}
 	return s.db.SetGroupAccessApplied(groupID, desired)
@@ -680,21 +643,14 @@ func (s *server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	var malformed []string
 	xrayDevices := map[string][]store.Device{}
-	legacyBypassMethods := map[string]string{}
 	var deviceBypassRooms []store.Device
 	for _, device := range devices {
 		if isBypassMethod(device.Method) {
-			if device.ProfileGeneration < 1 {
-				legacyBypassMethods[device.Method] = device.Credential
-			} else {
-				if device.Enabled && groupAccessEnabled(group) {
-					if err := s.controlCredential(device, false); err != nil {
-						fail(w, 400, fmt.Errorf("failed to stop room %q: %w", device.Name, err))
-						return
-					}
-				}
-				deviceBypassRooms = append(deviceBypassRooms, device)
+			if err := s.removeBypassDeviceRoom(device, true); err != nil {
+				fail(w, 400, err)
+				return
 			}
+			deviceBypassRooms = append(deviceBypassRooms, device)
 			continue
 		}
 		if !device.Enabled {
@@ -727,14 +683,6 @@ func (s *server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	bypassMethods := make([]string, 0, len(legacyBypassMethods))
-	for method := range legacyBypassMethods {
-		bypassMethods = append(bypassMethods, method)
-		if err := s.removeBypassRoom(id, method, true); err != nil {
-			fail(w, 400, fmt.Errorf("failed to remove the dedicated bypass room: %w", err))
-			return
-		}
-	}
 	if err := s.db.DeleteGroup(id); err != nil {
 		if groupAccessEnabled(group) {
 			for _, device := range deviceBypassRooms {
@@ -742,20 +690,13 @@ func (s *server) deleteGroup(w http.ResponseWriter, r *http.Request) {
 					_ = s.controlCredential(device, true)
 				}
 			}
-			for method, credential := range legacyBypassMethods {
-				_ = s.restoreSharedBypassRoom(id, method, credential)
-			}
+
 		}
 		fail(w, 400, err)
 		return
 	}
 	result := map[string]any{"ok": true}
 	var cleanupWarnings []string
-	for _, method := range bypassMethods {
-		if err := s.removeBypassRoom(id, method, false); err != nil {
-			cleanupWarnings = append(cleanupWarnings, strings.TrimPrefix(method, "bypass-")+": "+err.Error())
-		}
-	}
 	for _, device := range deviceBypassRooms {
 		if err := s.removeBypassDeviceRoom(device, false); err != nil {
 			cleanupWarnings = append(cleanupWarnings, device.Name+": "+err.Error())
@@ -788,12 +729,18 @@ func (s *server) createDevice(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	var in struct{ Name, Method, Format string }
+	var in struct{ Name, Method, Format, Fingerprint string }
 	if err := decode(r, &in); err != nil {
 		fail(w, 400, err)
 		return
 	}
 	in.Method, in.Format = normalizeDeviceMethod(in.Method, in.Format)
+	if in.Fingerprint != "" {
+		if _, err := withXrayFingerprint("vless://id@example.com:443", in.Fingerprint); err != nil {
+			fail(w, 400, err)
+			return
+		}
+	}
 	if err := s.db.ValidateDevice(gid, in.Name, in.Method, in.Format); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
@@ -822,6 +769,9 @@ func (s *server) createDevice(w http.ResponseWriter, r *http.Request) {
 		_ = s.db.DeleteDevice(id)
 		fail(w, http.StatusBadRequest, err)
 		return
+	}
+	if (in.Method == "xray" || in.Method == "xray-xhttp") && in.Fingerprint != "" {
+		profile.Credential, _ = withXrayFingerprint(profile.Credential, in.Fingerprint)
 	}
 	if err := s.db.SetDeviceCredential(id, profile.Credential, profile.ProfileGeneration, profile.ProtocolVersion); err != nil {
 		device := store.Device{ID: id, GroupID: gid, Name: in.Name, Method: in.Method, Format: in.Format, Credential: profile.Credential, ProfileGeneration: profile.ProfileGeneration, ProtocolVersion: profile.ProtocolVersion, Enabled: true}
@@ -970,11 +920,16 @@ func (s *server) updateDevice(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	var in struct{ Name string }
+	var in struct {
+		Name        string
+		Fingerprint *string
+	}
 	if err := decode(r, &in); err != nil {
 		fail(w, 400, err)
 		return
 	}
+	s.credentialMu.Lock()
+	defer s.credentialMu.Unlock()
 	current, err := s.db.Device(id)
 	if err != nil {
 		fail(w, 404, err)
@@ -982,6 +937,27 @@ func (s *server) updateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(in.Name) == "" {
 		fail(w, http.StatusBadRequest, errors.New("name is required"))
+		return
+	}
+	if in.Fingerprint != nil && (current.Method == "xray" || current.Method == "xray-xhttp") {
+		credential, err := withXrayFingerprint(current.Credential, *in.Fingerprint)
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
+		group, err := s.db.Group(current.GroupID)
+		if err != nil {
+			fail(w, 500, err)
+			return
+		}
+		link, _ := url.Parse(credential)
+		link.Fragment = managedProfileName(group.Name, in.Name)
+		err = s.db.UpdateDeviceProfiles([]store.DeviceProfileUpdate{{DeviceID: id, Name: in.Name, Credential: link.String(), ProfileGeneration: current.ProfileGeneration, ProtocolVersion: current.ProtocolVersion}})
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
+		jsonOut(w, 200, map[string]any{"ok": true})
 		return
 	}
 	if err := s.db.UpdateDevice(id, current.GroupID, in.Name); err != nil {
@@ -1005,6 +981,13 @@ func (s *server) deviceQR(w http.ResponseWriter, r *http.Request) {
 	if d.Credential == "" {
 		fail(w, 404, errors.New("this device does not have a credential yet"))
 		return
+	}
+	if r.URL.Query().Get("format") == "amnezia" && (d.Method == "xray" || d.Method == "xray-xhttp") {
+		d.Credential, err = xrayNativeProfile(d.Credential)
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
 	}
 	png, err := credentialQR(d)
 	if err != nil {
@@ -1045,7 +1028,15 @@ func (s *server) deviceCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "credential": displayCredential(d)})
+	credential := displayCredential(d)
+	if r.URL.Query().Get("format") == "amnezia" && (d.Method == "xray" || d.Method == "xray-xhttp") {
+		credential, err = xrayNativeProfile(d.Credential)
+		if err != nil {
+			fail(w, 400, err)
+			return
+		}
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"ok": true, "credential": credential})
 }
 
 func displayCredential(d store.Device) string {
@@ -1102,28 +1093,11 @@ func (s *server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 			revoked = true
 		}
 	}
-	lastBypassRoom := false
-	deviceBypassRoom := false
-	if isBypassMethod(d.Method) {
-		if d.ProfileGeneration >= 1 {
-			deviceBypassRoom = true
-			if err := s.removeBypassDeviceRoom(d, true); err != nil {
-				fail(w, 400, fmt.Errorf("the device was not removed because its room could not be stopped: %w", err))
-				return
-			}
-		} else {
-			remaining, err := s.db.CountProfilesBeforeGeneration(d.GroupID, d.Method, 1)
-			if err != nil {
-				fail(w, http.StatusInternalServerError, err)
-				return
-			}
-			lastBypassRoom = remaining == 1
-			if lastBypassRoom {
-				if err := s.removeBypassRoom(d.GroupID, d.Method, true); err != nil {
-					fail(w, 400, fmt.Errorf("the device was not removed because its room could not be stopped: %w", err))
-					return
-				}
-			}
+	deviceBypassRoom := isBypassMethod(d.Method)
+	if deviceBypassRoom {
+		if err := s.removeBypassDeviceRoom(d, true); err != nil {
+			fail(w, 400, err)
+			return
 		}
 	}
 	if err := s.db.DeleteDevice(id); err != nil {
@@ -1133,18 +1107,11 @@ func (s *server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		if deviceBypassRoom && groupAccessEnabled(group) {
 			_ = s.controlCredential(d, true)
 		}
-		if lastBypassRoom && groupAccessEnabled(group) {
-			_ = s.restoreSharedBypassRoom(d.GroupID, d.Method, d.Credential)
-		}
+
 		fail(w, 400, err)
 		return
 	}
 	result := map[string]any{"ok": true}
-	if lastBypassRoom {
-		if err := s.removeBypassRoom(d.GroupID, d.Method, false); err != nil {
-			warning = "Device removed. Its stopped room data could not be cleared automatically: " + err.Error()
-		}
-	}
 	if deviceBypassRoom {
 		if err := s.removeBypassDeviceRoom(d, false); err != nil {
 			warning = "Device removed. Its stopped room data could not be cleared automatically: " + err.Error()
@@ -1200,30 +1167,6 @@ func (s *server) removeBypassRoom(groupID int64, method string, preserve bool) e
 		_ = json.NewDecoder(resp.Body).Decode(&result)
 		if result.Error == "" {
 			result.Error = "agent rejected room removal"
-		}
-		return errors.New(result.Error)
-	}
-	return nil
-}
-
-func (s *server) restoreSharedBypassRoom(groupID int64, method, credential string) error {
-	provider := strings.TrimPrefix(method, "bypass-")
-	payload, _ := json.Marshal(map[string]string{"credential": credential})
-	path := fmt.Sprintf("http://unix/v1/bypass/rooms/%d/%s", groupID, provider)
-	req, _ := http.NewRequest(http.MethodPut, path, strings.NewReader(string(payload)))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.agent.Do(req)
-	if err != nil {
-		return fmt.Errorf("agent unavailable: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		var result struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&result)
-		if result.Error == "" {
-			result.Error = "agent rejected shared room restore"
 		}
 		return errors.New(result.Error)
 	}
@@ -2161,7 +2104,7 @@ func (s *server) dockerComposeExternal(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) componentSettings(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id != "tweaks" && id != "amneziawg" {
+	if id != "tweaks" && id != "amneziawg" && id != "xray" && id != "xray-xhttp" {
 		fail(w, http.StatusBadRequest, errors.New("editable server settings are not available for this component"))
 		return
 	}
@@ -2175,37 +2118,6 @@ func (s *server) componentSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	req, _ := http.NewRequest(r.Method, "http://unix/v1/components/"+id+"/settings", bytes.NewReader(body))
-	if len(body) > 0 {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := s.agent.Do(req)
-	if err != nil {
-		fail(w, http.StatusBadGateway, fmt.Errorf("agent unavailable: %w", err))
-		return
-	}
-	defer resp.Body.Close()
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-}
-
-func (s *server) xrayRealitySNI(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id != "xray" && id != "xray-xhttp" {
-		fail(w, http.StatusBadRequest, errors.New("REALITY settings are available only for Xray components"))
-		return
-	}
-	var body []byte
-	if r.Method != http.MethodGet {
-		var err error
-		body, err = io.ReadAll(io.LimitReader(r.Body, 16<<10+1))
-		if err != nil || len(body) == 0 || len(body) > 16<<10 {
-			fail(w, http.StatusBadRequest, errors.New("invalid REALITY settings request size"))
-			return
-		}
-	}
-	req, _ := http.NewRequest(r.Method, "http://unix/v1/components/"+id+"/reality-sni", bytes.NewReader(body))
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}

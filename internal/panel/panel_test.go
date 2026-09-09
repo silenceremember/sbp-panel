@@ -406,10 +406,6 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		"externalRemovalPrompt(component, event.currentTarget)",
 		"actions: [{label: 'Remove', danger: true",
 		"readOnlyComponentSettingsDialog(component)",
-		"data-reality-target-host",
-		"data-reality-target-port",
-		"data-reality-additional-sni",
-		"server_names: serverNames",
 		"app.inert = true",
 		"dialog.show()",
 		"blockBackgroundScroll",
@@ -449,9 +445,6 @@ func TestDashboardExposesPersistentComponentSettingsControls(t *testing.T) {
 		if strings.Contains(javascript, removed) {
 			t.Fatalf("dashboard JavaScript still contains obsolete per-field action %q", removed)
 		}
-	}
-	if !strings.Contains(javascript, `data-reality-target-port class="settings-port-input" type="text" inputmode="numeric"`) || strings.Contains(javascript, `data-reality-target-port class="settings-port-input" type="number"`) {
-		t.Fatal("REALITY target port does not use the spinner-free numeric text control")
 	}
 	stylesheet := readAsset("/app.css")
 	for _, expected := range []string{".component-settings-editor", ".container-list", ".settings-notice", ".component-actions button", "width: 94px", "flex: 0 0 94px", "body.dialog-open::before", "z-index: 910", "grid-template-columns: 320px", "image-rendering: pixelated"} {
@@ -955,102 +948,6 @@ func TestXrayProfileRefreshRejectsMalformedSetAtomically(t *testing.T) {
 	}
 }
 
-func TestXrayRealitySNIForwardingIsVariantScopedAndBounded(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		method     string
-		id         string
-		body       string
-		wantStatus int
-		wantCalls  int
-	}{
-		{name: "read stable", method: http.MethodGet, id: "xray", wantStatus: http.StatusOK, wantCalls: 1},
-		{name: "add xhttp", method: http.MethodPost, id: "xray-xhttp", body: `{"sni":"dl.google.com"}`, wantStatus: http.StatusOK, wantCalls: 1},
-		{name: "replace reality settings", method: http.MethodPut, id: "xray", body: `{"target":"dl.google.com:443","server_names":["www.googletagmanager.com","dl.google.com"]}`, wantStatus: http.StatusOK, wantCalls: 1},
-		{name: "remove stable", method: http.MethodDelete, id: "xray", body: `{"sni":"dl.google.com"}`, wantStatus: http.StatusOK, wantCalls: 1},
-		{name: "unsupported component", method: http.MethodGet, id: "amneziawg", wantStatus: http.StatusBadRequest},
-		{name: "empty mutation", method: http.MethodPost, id: "xray", wantStatus: http.StatusBadRequest},
-		{name: "oversized mutation", method: http.MethodPut, id: "xray", body: strings.Repeat("x", 16<<10+1), wantStatus: http.StatusBadRequest},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			calls := 0
-			agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				calls++
-				if request.Method != test.method || request.URL.RequestURI() != "/v1/components/"+test.id+"/reality-sni" {
-					t.Fatalf("agent request = %s %s", request.Method, request.URL.RequestURI())
-				}
-				forwarded, _ := io.ReadAll(request.Body)
-				if string(forwarded) != test.body {
-					t.Fatalf("forwarded body=%q, want %q", forwarded, test.body)
-				}
-				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
-			})}
-			s := &server{agent: agent}
-			request := httptest.NewRequest(test.method, "/api/components/"+test.id+"/reality-sni", strings.NewReader(test.body))
-			request.SetPathValue("id", test.id)
-			response := httptest.NewRecorder()
-			s.xrayRealitySNI(response, request)
-			if response.Code != test.wantStatus || calls != test.wantCalls {
-				t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
-			}
-			if test.wantStatus == http.StatusOK && response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("SNI response is cacheable: %#v", response.Header())
-			}
-		})
-	}
-}
-
-func TestXrayRealitySNIRoutesRequireAuthenticationAdminAndCSRF(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.DB.Close()
-	if err := db.CreateOwner("admin", "test-password"); err != nil {
-		t.Fatal(err)
-	}
-	account, err := db.Authenticate("admin", "test-password")
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, csrfToken, err := db.CreateSession(account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		calls++
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true,"settings":{"default_sni":"www.googletagmanager.com","server_names":["www.googletagmanager.com"]}}`))}, nil
-	})}
-	s := &server{db: db, agent: agent, tries: map[string]attempt{}, checks: map[string]attempt{}}
-	mux := http.NewServeMux()
-	s.routes(mux)
-
-	request := httptest.NewRequest(http.MethodGet, "/api/components/xray/reality-sni", nil)
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized || calls != 0 {
-		t.Fatalf("unauthenticated read status=%d calls=%d", response.Code, calls)
-	}
-
-	request = httptest.NewRequest(http.MethodPost, "/api/components/xray/reality-sni", strings.NewReader(`{"sni":"dl.google.com"}`))
-	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
-	response = httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusForbidden || calls != 0 {
-		t.Fatalf("CSRF-free mutation status=%d calls=%d", response.Code, calls)
-	}
-
-	request = httptest.NewRequest(http.MethodPost, "/api/components/xray/reality-sni", strings.NewReader(`{"sni":"dl.google.com"}`))
-	request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
-	request.Header.Set("X-CSRF-Token", csrfToken)
-	response = httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || calls != 1 {
-		t.Fatalf("authenticated mutation status=%d body=%q calls=%d", response.Code, response.Body.String(), calls)
-	}
-}
-
 func TestComponentSettingsForwardingIsScopedAndBounded(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -1060,6 +957,8 @@ func TestComponentSettingsForwardingIsScopedAndBounded(t *testing.T) {
 		wantStatus int
 		wantCalls  int
 	}{
+		{name: "read Xray", method: http.MethodGet, id: "xray", wantStatus: http.StatusOK, wantCalls: 1},
+		{name: "read XHTTP", method: http.MethodGet, id: "xray-xhttp", wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "read tuning", method: http.MethodGet, id: "tweaks", wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "save AmneziaWG", method: http.MethodPut, id: "amneziawg", body: `{"content":"Jc = auto\n"}`, wantStatus: http.StatusOK, wantCalls: 1},
 		{name: "unsupported component", method: http.MethodGet, id: "docker", wantStatus: http.StatusBadRequest},
@@ -1942,5 +1841,90 @@ func TestExpiredGroupReconcilerRevokesAccessOnce(t *testing.T) {
 	}
 	if len(states) != 2 || !states[1] {
 		t.Fatalf("extended access was not restored: %#v", states)
+	}
+}
+
+func TestConfigurationExportContainsPortableStateWithoutConnectionSecrets(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	gid, _ := db.CreateGroupWithExpiration("Family", "Contact", 30, false, "2030-02-01T00:00:00Z")
+	id, _ := db.CreateDevice(gid, "Phone", "xray", "vless://private-uuid@example.com:443?fp=firefox&pbk=server-key")
+	_ = db.ToggleDevice(id, false)
+	agent := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"components":["docker","xray"],"settings":{},"cookies":{}}`))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	response := httptest.NewRecorder()
+	s.configuration(response, httptest.NewRequest(http.MethodGet, "/api/configuration", nil))
+	var exported portableConfiguration
+	if err := json.Unmarshal(response.Body.Bytes(), &exported); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != 200 || len(exported.Groups) != 1 || exported.Groups[0].Devices[0].Enabled || exported.Groups[0].Devices[0].Fingerprint != "firefox" || exported.Groups[0].ExpiresAt != "2030-02-01T00:00:00Z" {
+		t.Fatalf("invalid export: %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "private-uuid") || strings.Contains(response.Body.String(), "server-key") {
+		t.Fatal("portable export copied old server connection secrets")
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("configuration is cacheable")
+	}
+}
+
+func TestConfigurationRoutesRequireAdminAndCSRF(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	if err := db.CreateOwner("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	account, err := db.Authenticate("admin", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrf, err := db.CreateSession(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	s := &server{db: db, agent: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true,"components":[],"settings":{},"cookies":{}}`))}, nil
+	})}}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	for _, tc := range []struct {
+		method, path, role string
+		session, csrf      bool
+		status             int
+	}{
+		{"GET", "/api/configuration", "admin", false, false, 401},
+		{"POST", "/api/configuration/preview", "admin", true, false, 403},
+		{"GET", "/api/configuration", "user", true, false, 403},
+		{"POST", "/api/configuration/preview", "user", true, true, 403},
+		{"GET", "/api/configuration", "admin", true, false, 200},
+		{"POST", "/api/configuration/preview", "admin", true, true, 200},
+	} {
+		if _, err := db.DB.Exec("UPDATE accounts SET role=? WHERE id=?", tc.role, account.ID); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{"format":"sbp-configuration","groups":[],"components":[],"settings":{},"cookies":{}}`))
+		if tc.session {
+			request.AddCookie(&http.Cookie{Name: "vpn_session", Value: token})
+		}
+		if tc.csrf {
+			request.Header.Set("X-CSRF-Token", csrf)
+		}
+		before := calls
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != tc.status || (tc.status != 200 && calls != before) {
+			t.Fatalf("%s %s role=%s: status=%d body=%s calls=%d", tc.method, tc.path, tc.role, response.Code, response.Body.String(), calls-before)
+		}
 	}
 }

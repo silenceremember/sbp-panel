@@ -3218,6 +3218,27 @@ func Run(configPath string) error {
 	activeMonitor.Unlock()
 	updateClient := &http.Client{Timeout: 2 * time.Minute}
 	reconcileUpdateProgress()
+	mux.HandleFunc("POST /v1/configuration/validate", func(w http.ResponseWriter, r *http.Request) {
+		var settings map[string]string
+		body, err := io.ReadAll(io.LimitReader(r.Body, 256<<10+1))
+		if err != nil || len(body) > 256<<10 || json.Unmarshal(body, &settings) != nil {
+			writeError(w, 400, errors.New("invalid settings"))
+			return
+		}
+		if err := validateConfigurationSettings(settings); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /v1/configuration", func(w http.ResponseWriter, r *http.Request) {
+		result, err := exportComponentConfiguration(c)
+		if err != nil {
+			writeError(w, 500, err)
+			return
+		}
+		writeJSON(w, result)
+	})
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]any{"ok": true}) })
 	mux.HandleFunc("GET /v1/discovery", func(w http.ResponseWriter, r *http.Request) {
 		discovery := discover()
@@ -3416,6 +3437,8 @@ func Run(configPath string) error {
 			state, err = networkTuningSettingsState()
 		case "amneziawg":
 			state, err = amneziaWGSettingsState()
+		case "xray", "xray-xhttp":
+			state, err = xrayTextSettings(r.PathValue("id"), nil)
 		default:
 			err = errors.New("editable server settings are not available for this component")
 		}
@@ -3446,94 +3469,11 @@ func Run(configPath string) error {
 			state, err = saveNetworkTuningSettings(input.Content)
 		case "amneziawg":
 			state, err = saveAmneziaWGSettings(input.Content)
+		case "xray", "xray-xhttp":
+			state, err = xrayTextSettings(r.PathValue("id"), &input.Content)
 		default:
 			err = errors.New("editable server settings are not available for this component")
 		}
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, map[string]any{"ok": true, "settings": state})
-	})
-	mux.HandleFunc("GET /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
-		variant, ok := xrayVariantForMethod(r.PathValue("id"))
-		if !ok {
-			writeError(w, http.StatusBadRequest, errors.New("REALITY SNI settings are available only for Xray components"))
-			return
-		}
-		state, err := getXrayRealitySNIState(variant)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, map[string]any{"ok": true, "settings": state})
-	})
-	mux.HandleFunc("POST /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
-		variant, ok := xrayVariantForMethod(r.PathValue("id"))
-		if !ok {
-			writeError(w, http.StatusBadRequest, errors.New("REALITY SNI settings are available only for Xray components"))
-			return
-		}
-		sni, err := decodeXrayRealitySNIRequest(r.Body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		owner := "component-settings:" + variant.Method
-		if err := acquireLifecycle(owner); err != nil {
-			writeError(w, http.StatusConflict, err)
-			return
-		}
-		defer releaseLifecycle(owner)
-		state, err := addXrayRealitySNI(variant, sni)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, map[string]any{"ok": true, "settings": state})
-	})
-	mux.HandleFunc("PUT /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
-		variant, ok := xrayVariantForMethod(r.PathValue("id"))
-		if !ok {
-			writeError(w, http.StatusBadRequest, errors.New("REALITY settings are available only for Xray components"))
-			return
-		}
-		target, serverNames, err := decodeXrayRealitySettingsRequest(r.Body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		owner := "component-settings:" + variant.Method
-		if err := acquireLifecycle(owner); err != nil {
-			writeError(w, http.StatusConflict, err)
-			return
-		}
-		defer releaseLifecycle(owner)
-		state, err := replaceXrayRealitySettings(variant, target, serverNames)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, map[string]any{"ok": true, "settings": state})
-	})
-	mux.HandleFunc("DELETE /v1/components/{id}/reality-sni", func(w http.ResponseWriter, r *http.Request) {
-		variant, ok := xrayVariantForMethod(r.PathValue("id"))
-		if !ok {
-			writeError(w, http.StatusBadRequest, errors.New("REALITY SNI settings are available only for Xray components"))
-			return
-		}
-		sni, err := decodeXrayRealitySNIRequest(r.Body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		owner := "component-settings:" + variant.Method
-		if err := acquireLifecycle(owner); err != nil {
-			writeError(w, http.StatusConflict, err)
-			return
-		}
-		defer releaseLifecycle(owner)
-		state, err := removeXrayRealitySNI(variant, sni)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

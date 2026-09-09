@@ -35,6 +35,7 @@ jobs:
         run: |
           node --check internal/panel/web/app.js
           node --check internal/panel/web/check.js
+          node --test deploy/test_ui.cjs
       - name: Verify third-party notices
         shell: bash
         run: |

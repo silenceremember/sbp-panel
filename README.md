@@ -225,3 +225,42 @@ Their names, trademarks, software, and services belong to their respective owner
 ## License
 
 Decided to fork SBP or use some of its code elsewhere? Please include a link to the [original project](https://github.com/silenceremember/sbp-panel). Other than that, it is the standard [Apache License 2.0](LICENSE) - keep the license and attribution from [NOTICE](NOTICE) where required.
+
+## Profiles and portable configuration
+
+Xray and XHTTP use standard VLESS links for Copy and QR. Choose **Amnezia QR**
+for native Xray JSON: AmneziaVPN 5.0.1.5 and 5.0.2.1 do not recognize plain
+VLESS URIs in their QR import path, and their URI parser omits XHTTP path.
+Native JSON includes that path and keeps Vision flow only on TCP.
+
+Components > Settings uses a JSON editor for each Xray variant. `target` and
+`server_names` configure REALITY; `default_sni` and `fingerprint` control new
+profiles. **Refresh device profiles** applies saved server parameters to existing
+links while keeping each UUID and fingerprint. Users must import changed links.
+Fingerprint is also selectable when creating or editing a device and remains
+editable in the client. No SNI or fingerprint guarantees reachability on every
+network; check the target from the actual server and the client's transport.
+
+**Configuration** exports one JSON file containing groups, contact names,
+expiration dates, enabled devices, component settings and provider cookies.
+The preview shows the groups/devices to replace before confirmation. Restore
+uses normal component install and device operations, downloads pinned images,
+and generates credentials for the destination server. Keep the tab open until
+completion; a failed restore reports the failed step and can be retried with
+the same file. Existing panel login and TLS identity are not copied. Provider
+cookies are secrets: store this export privately. Old connection keys and traffic
+history are deliberately not portable. Expired provider cookies must be replaced.
+
+## Browser certificate warning
+
+The default certificate is self-signed. A publicly trusted certificate matching
+the address used in the browser removes the certificate warning. Domain names
+are supported, and Let's Encrypt also issues short-lived IP certificates:
+https://letsencrypt.org/2026/03/11/shorter-certs-certbot
+
+For an IP certificate, use Certbot 5.4+ with the `shortlived` profile and an
+HTTP-01 challenge on port 80. Keep automatic renewal enabled. A deploy hook must
+install the renewed full chain and key into the configured `tls_cert`/`tls_key`
+paths with the existing panel group permissions, then restart `vpn-panel`.
+Certificates cannot be fixed by hiding the browser warning or disabling TLS
+verification. The panel updater preserves these certificate files.

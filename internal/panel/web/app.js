@@ -190,7 +190,10 @@ function notify(message, type = 'info', title = '', options = {}) {
     download.textContent = 'Download QR';
     actions.append(copy, download);
 
-    notice.append(image, actions);
+    const qrTitle = document.createElement('strong');
+    qrTitle.className = 'notification-qr-title';
+    qrTitle.textContent = title || 'Profile QR';
+    notice.append(qrTitle, image, actions);
     notice.insertAdjacentHTML('beforeend', '<span class="notification-timer"></span>');
   } else {
     notice.innerHTML = `<div class="notification-content"><strong class="notification-title"></strong><p class="notification-message"></p></div><div class="notification-actions"><button type="button" class="button-secondary notification-copy">Copy</button></div><span class="notification-timer"></span>`;
@@ -513,6 +516,7 @@ async function refreshGroups() {
   csrf = nextState.csrf;
   state = nextState;
   setupServerLink();
+  document.querySelector('#configuration').onclick = configurationDialog;
   renderGroups(indexDevices(nextState.devices, nextState.groups));
   if (lastMetrics) applyGroupMetrics(lastMetrics);
   return true;
@@ -543,11 +547,130 @@ function render(initial = {}) {
   };
   document.querySelector('#new-group').onclick = () => groupDialog();
   setupServerLink();
+  document.querySelector('#configuration').onclick = configurationDialog;
   renderGroups(initial.devices);
   loadDiscovery(initial.discovery);
   loadMetrics(false, initial.metrics);
   loadBypassRooms(initial.rooms);
   startMetricsPolling();
+}
+
+function downloadConfiguration(value) {
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], {type: 'application/json'}));
+  link.href = url; link.download = 'sbp-configuration.json'; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function configurationDialog() {
+  const generation = ++dialogGeneration;
+  const dialog = document.querySelector('#dialog');
+  const body = document.querySelector('#dialog-body');
+  document.querySelector('#dialog-title').textContent = 'Configuration';
+  setDialogAction('Restore');
+  const submit = document.querySelector('#dialog-ok');
+  submit.disabled = true;
+  let candidate = null;
+  let restoring = false;
+  let selection = 0;
+  body.innerHTML = `<p class="settings-notice">One portable file for groups, dates, devices, component settings and provider cookies. Restore generates new connection profiles for this server. Keep the downloaded file private. Keep this tab open during restore.</p>
+    <button type="button" class="button-secondary" data-export>Download configuration</button>
+    <label class="drop" data-config-drop>Choose or drop an SBP configuration<input type="file" accept="application/json,.json"></label>
+    <div data-config-preview class="muted">Current groups and profiles will be replaced. Panel login and certificate stay on this server.</div>`;
+  body.querySelector('[data-export]').onclick = async () => { try { downloadConfiguration(await api('/api/configuration')); } catch (error) { notifyError(error); } };
+  const preview = body.querySelector('[data-config-preview]');
+  const choose = async file => {
+    if (restoring) return;
+    const current = ++selection;
+    candidate = null; submit.disabled = true;
+    try {
+      if (!file || file.size > 4 * 1024 * 1024) throw new Error('Select a configuration JSON smaller than 4 MiB.');
+      const parsed = await api('/api/configuration/preview', {method: 'POST', body: JSON.parse(await file.text())});
+      if (generation !== dialogGeneration || current !== selection) return;
+      candidate = parsed;
+      preview.replaceChildren();
+      const summary = document.createElement('p');
+      summary.textContent = `Replace ${state.groups.length} current group(s) with ${parsed.groups.length} group(s) and ${parsed.groups.reduce((n,g) => n + g.devices.length,0)} device(s). Components: ${parsed.components.join(', ')}.`;
+      preview.append(summary);
+      for (const group of parsed.groups) {
+        const row = document.createElement('p');
+        row.textContent = `${group.name}: ${group.devices.map(d => d.name + ' (' + d.method + ')').join(', ')}. ${group.unlimited ? 'Unlimited access' : group.expires_at}`;
+        preview.append(row);
+      }
+      submit.disabled = false;
+    } catch (error) { notifyError(error); }
+  };
+  const drop = body.querySelector('[data-config-drop]');
+  drop.querySelector('input').onchange = event => choose(event.target.files[0]);
+  drop.ondragover = event => { event.preventDefault(); };
+  drop.ondrop = event => { event.preventDefault(); choose(event.dataTransfer.files[0]); };
+  openDialog(dialog);
+  document.querySelector('#dialog-form').onsubmit = async event => {
+    if (event.submitter?.value === 'cancel') return;
+    event.preventDefault();
+    if (!candidate || !confirm('Replace the current groups, device profiles and component configuration with the previewed file? Users must import newly generated profiles.')) return;
+    submit.disabled = true;
+    restoring = true;
+    const cancel = document.querySelector('#dialog-form [value="cancel"]');
+    cancel.disabled = true;
+    drop.querySelector('input').disabled = true;
+    const report = message => { preview.textContent = message; };
+    try {
+      await restoreConfiguration(candidate, report);
+      dialog.close();
+      await load();
+      notify('Configuration restored. Import the newly generated profiles on every device.', 'success');
+    } catch (error) {
+      report('Restore stopped: ' + error.message + '. Correct the problem and retry this file to replace the partial result.');
+      submit.disabled = false;
+    } finally { restoring = false; cancel.disabled = false; drop.querySelector('input').disabled = false; }
+  };
+}
+
+async function restoreConfiguration(configuration, report) {
+  const inventory = await api('/api/discovery');
+  for (const component of inventory.components) {
+    if (configuration.components.includes(component.id) && component.external) throw new Error(`Remove or resolve external ${component.name} before restoring.`);
+  }
+  const previous = await api('/api/state');
+  for (const group of previous.groups) {
+    report(`Removing group: ${group.name}`);
+    await api(`/api/groups/${group.id}`, {method: 'DELETE'});
+  }
+  const order = ['tweaks','docker','xray','xray-xhttp','amneziawg','bypass-wb','bypass-telemost','bypass-dion','bypass-vk'];
+  const installed = new Set(inventory.components.filter(c => c.installed).map(c => c.id));
+  const lifecycle = async (id, operation) => {
+    report(`${operation === 'install' ? 'Installing' : 'Removing'}: ${id}`);
+    await api(`/api/components/${id}${operation === 'install' ? '/install' : ''}`, {method: operation === 'install' ? 'POST' : 'DELETE'});
+    await watchJob(id, document.querySelector('#dialog-ok'), operation, {throwOnError: true, onDone: () => {}});
+  };
+  for (const id of [...order].reverse()) {
+    if (installed.has(id) && !configuration.components.includes(id)) await lifecycle(id, 'uninstall');
+  }
+  for (const [id, content] of Object.entries(configuration.settings || {})) {
+    report(`Applying settings: ${id}`);
+    await api(`/api/components/${id}/settings`, {method:'PUT', body:{content}});
+  }
+  for (const provider of ['wbstream','telemost','dion','vk']) {
+    if (!Object.hasOwn(configuration.cookies || {}, provider)) await api(`/api/bypass/${provider}/credentials`, {method:'DELETE'});
+  }
+  for (const [provider, cookies] of Object.entries(configuration.cookies || {})) {
+    const payload = new FormData();
+    payload.append('cookies', new Blob([JSON.stringify(cookies)], {type:'application/json'}), 'cookies.json');
+    await api(`/api/bypass/${provider}/credentials`, {method:'POST', body:payload});
+  }
+  for (const id of order) {
+    if (configuration.components.includes(id) && !installed.has(id)) await lifecycle(id, 'install');
+  }
+  for (const group of configuration.groups) {
+    report(`Restoring group: ${group.name}`);
+    const created = await api('/api/groups', {method:'POST', body:{Name:group.name,Contact:group.contact,Unlimited:group.unlimited,ExpiresAt:group.expires_at}});
+    for (const device of group.devices) {
+      report(`Restoring device: ${group.name} / ${device.name}`);
+      const profile = await api(`/api/groups/${created.id}/devices`, {method:'POST',body:{Name:device.name,Method:device.method,Format:device.format,Fingerprint:device.fingerprint}});
+      if (!device.enabled) await api(`/api/devices/${profile.id}/enabled`, {method:'PUT',body:{Enabled:false}});
+    }
+  }
 }
 
 function setupUpdater() {
@@ -827,7 +950,20 @@ function deviceDialog(device) {
   body.innerHTML = `
     <label>Name<input id="device-name" value="${escapeHTML(device.name || 'Phone')}" required></label>
     <label>Protocol<select id="device-method" ${editing ? 'disabled' : ''}>${DEVICE_METHOD_OPTIONS.map(([id, label]) => `<option value="${id}" ${id === selectedMethod ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+    <label id="fingerprint-field">Fingerprint<select id="device-fingerprint"><option value="">Component default</option>${['chrome','firefox','safari','ios','android','edge','random','randomized'].map(fp => `<option>${fp}</option>`).join('')}</select><small class="muted">Used only to generate the profile and QR code. You can change it in the client app.</small></label>
     ${editing ? '<small class="muted">Protocol and format are bound to the credential. Recreate the device when a new profile is required.</small>' : ''}`;
+  const fingerprint = body.querySelector('#device-fingerprint');
+  const updateFingerprint = () => { body.querySelector('#fingerprint-field').hidden = !['xray', 'xray-xhttp'].includes(body.querySelector('#device-method').value); };
+  body.querySelector('#device-method').onchange = updateFingerprint;
+  updateFingerprint();
+  if (editing && ['xray','xray-xhttp'].includes(device.method)) {
+    fingerprint.disabled = true;
+    api(`/api/devices/${device.id}/credential`).then(value => {
+      if (generation !== dialogGeneration) return;
+      fingerprint.value = new URL(value.credential).searchParams.get('fp') || 'chrome';
+      fingerprint.disabled = false;
+    }).catch(notifyError);
+  }
   openDialog(dialog);
   document.querySelector('#dialog-form').onsubmit = async event => {
     if (event.submitter?.value === 'cancel') return;
@@ -836,9 +972,9 @@ function deviceDialog(device) {
     const actionKey = editing ? `device:${device.id}:update` : `group:${device.group_id}:device:create`;
     try {
       await runPendingAction(actionKey, submit, editing ? 'Saving…' : 'Creating…', async () => {
-        const payload = {Name: body.querySelector('#device-name').value, Method: body.querySelector('#device-method').value};
+        const payload = {Name: body.querySelector('#device-name').value, Method: body.querySelector('#device-method').value, Fingerprint: fingerprint.value};
         if (editing) {
-          await api(`/api/devices/${device.id}`, {method: 'PUT', body: {Name: payload.Name}});
+          await api(`/api/devices/${device.id}`, {method: 'PUT', body: {Name: payload.Name, ...(fingerprint.value && !fingerprint.disabled ? {Fingerprint: fingerprint.value} : {})}});
           if (generation === dialogGeneration && dialog.open) dialog.close();
           await refreshGroups();
           notify('Device updated.', 'success');
@@ -985,13 +1121,17 @@ async function copyCredential(title, credential, id) {
     credential = value.credential;
   }
   if (!credential) {
-    notify('Credential not found. This device was created by an older panel version.', 'error');
+    notify('This device has no credential.', 'error');
     return;
   }
   await copyText(credential);
   notify(credential, 'success', `Credential copied · ${title}`, {
     qr: `/api/devices/${id}/qr`,
-    qrFilename: `${title || 'credential'}-qr.png`
+    qrFilename: `${title || 'credential'}-qr.png`,
+    actions: credential.startsWith('vless://') ? [{label: 'Amnezia QR', onClick: async () => {
+      const value = await api(`/api/devices/${id}/credential?format=amnezia`);
+      notify(value.credential, 'info', `Amnezia · ${title}`, {qr: `/api/devices/${id}/qr?format=amnezia`, qrFilename: `${title}-amnezia.png`});
+    }}] : []
   });
 }
 
@@ -1203,65 +1343,6 @@ function bypassSettingsDialog(component) {
     });
 }
 
-function xrayRealitySNIDialog(component) {
-  const generation = ++dialogGeneration;
-  const dialog = document.querySelector('#dialog');
-  const body = document.querySelector('#dialog-body');
-  const form = document.querySelector('#dialog-form');
-  document.querySelector('#dialog-title').textContent = `${component.name} settings`;
-  setDialogAction('Save');
-
-  const renderSettings = settings => {
-    if (generation !== dialogGeneration) return;
-    const defaultSNI = String(settings?.default_sni || '');
-    const target = String(settings?.target || '');
-    const separator = target.lastIndexOf(':');
-    const targetHost = separator > 0 ? target.slice(0, separator) : target;
-    const targetPort = separator > 0 ? target.slice(separator + 1) : '443';
-    const names = Array.isArray(settings?.server_names) ? settings.server_names : [];
-    const additionalNames = names.filter(name => name !== defaultSNI).join('\n');
-    body.innerHTML = `
-      <p class="settings-notice">${escapeHTML(GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
-      <p class="muted">The default SNI remains in all generated profiles. Additional values become valid server-side choices for profiles edited manually in the client.</p>
-      <label>REALITY target<div class="settings-inline-control"><input data-reality-target-host type="text" maxlength="253" value="${escapeHTML(targetHost)}" placeholder="www.googletagmanager.com" aria-label="REALITY target hostname" autocomplete="off" required><input data-reality-target-port class="settings-port-input" type="text" inputmode="numeric" pattern="[0-9]{1,5}" maxlength="5" value="${escapeHTML(targetPort)}" aria-label="REALITY target port" required></div><small class="settings-warning">SBP probes this TLS endpoint before applying it to an installed component, or during a later installation. Already imported profiles are not rewritten.</small></label>
-      <label>Default SNI<input data-reality-default-sni type="text" value="${escapeHTML(defaultSNI)}" readonly><small class="muted">The default profile SNI is immutable.</small></label>
-      <label>Additional SNI values<textarea data-reality-additional-sni rows="6" maxlength="8192" spellcheck="false" autocomplete="off" placeholder="dl.google.com&#10;example.com">${escapeHTML(additionalNames)}</textarea><small class="muted">Optional. Enter one complete hostname per line. Saving replaces the complete additional-SNI list.</small></label>`;
-  };
-
-  form.onsubmit = async event => {
-    if (event.submitter?.value === 'cancel') return;
-    event.preventDefault();
-    const hostInput = body.querySelector('[data-reality-target-host]');
-    const portInput = body.querySelector('[data-reality-target-port]');
-    const additionalInput = body.querySelector('[data-reality-additional-sni]');
-    if (!hostInput?.reportValidity() || !portInput?.reportValidity() || !additionalInput) return;
-    const target = `${hostInput.value.trim()}:${portInput.value.trim()}`;
-    const serverNames = [
-      String(body.querySelector('[data-reality-default-sni]')?.value || '').trim(),
-      ...additionalInput.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
-    ];
-    const submit = event.submitter || document.querySelector('#dialog-ok');
-    try {
-      await runPendingAction(`component:${component.id}:reality`, submit, 'Saving…', async () => {
-        const result = await api(`/api/components/${component.id}/reality-sni`, {method: 'PUT', body: {target, server_names: serverNames}});
-        if (generation === dialogGeneration && dialog.open) dialog.close();
-        notify(`${component.name} REALITY settings saved as ${result.settings.target}.`, 'success');
-      });
-    } catch (error) { notifyError(error); }
-  };
-
-  api(`/api/components/${component.id}/reality-sni`)
-    .then(result => {
-      if (generation !== dialogGeneration) return;
-      renderSettings(result.settings);
-      openDialog(dialog);
-    })
-    .catch(error => {
-      if (generation === dialogGeneration && dialog.open) dialog.close();
-      notifyError(error);
-    });
-}
-
 function componentTextSettingsDialog(component) {
   const generation = ++dialogGeneration;
   const dialog = document.querySelector('#dialog');
@@ -1275,12 +1356,16 @@ function componentTextSettingsDialog(component) {
   const render = settings => {
     if (generation !== dialogGeneration || !dialog.open) return;
     const warning = settings?.warning ? `<p class="settings-warning">${escapeHTML(settings.warning)}</p>` : '';
-    const label = component.id === 'tweaks' ? 'Validated server commands' : 'AmneziaWG server parameters';
+    const label = component.id === 'tweaks' ? 'Validated server commands' : `${component.name} parameters`;
     body.innerHTML = `
       <p class="settings-notice">${escapeHTML(settings?.notice || GLOBAL_COMPONENT_SETTINGS_NOTICE)}</p>
       ${warning}
-      <label>${escapeHTML(label)}<textarea class="component-settings-editor" rows="13" spellcheck="false" autocomplete="off">${escapeHTML(settings?.content || '')}</textarea><small class="muted">Only the displayed server-side keys are accepted. Missing lines are restored to validated defaults when saved.</small></label>
-      <div class="settings-editor-actions"><button type="button" class="button-secondary" data-restore-component-defaults>Restore defaults</button></div>`;
+      <label>${escapeHTML(label)}<textarea class="component-settings-editor" rows="13" spellcheck="false" autocomplete="off">${escapeHTML(settings?.content || '')}</textarea><small class="muted">Edit the displayed keys. Server settings are validated before they are applied.</small></label>
+      <div class="settings-editor-actions"><button type="button" class="button-secondary" data-restore-component-defaults>Restore defaults</button>${component.installed && ['xray','xray-xhttp'].includes(component.id) ? '<button type="button" class="button-secondary" data-refresh-xray-profiles>Refresh device profiles</button>' : ''}</div>`;
+    body.querySelector('[data-refresh-xray-profiles]')?.addEventListener('click', async event => {
+      if (!confirm('Refresh all device links from the saved server settings? Users must import the refreshed profiles. Fingerprints and UUIDs stay the same.')) return;
+      await runComponentProfileRefresh(component,event.currentTarget);
+    });
     body.querySelector('[data-restore-component-defaults]').onclick = () => {
       body.querySelector('.component-settings-editor').value = String(settings?.default_content || '');
     };
@@ -1471,8 +1556,7 @@ async function loadDiscovery(prefetched = null) {
       });
       row.querySelector('[data-component-settings]')?.addEventListener('click', () => {
         if (isBypass) bypassSettingsDialog(component);
-        else if (component.id === 'xray' || component.id === 'xray-xhttp') xrayRealitySNIDialog(component);
-        else if (component.id === 'tweaks' || component.id === 'amneziawg') componentTextSettingsDialog(component);
+        else if (['xray', 'xray-xhttp', 'tweaks', 'amneziawg'].includes(component.id)) componentTextSettingsDialog(component);
         else if (component.id === 'docker') dockerSettingsDialog(component, d.containers, d.docker_compose);
         else readOnlyComponentSettingsDialog(component);
       });
@@ -1619,7 +1703,7 @@ function renderBypassRooms(root, provider) {
     root.innerHTML = '<span class="muted">No saved rooms for this service.</span>';
     return;
   }
-  root.innerHTML = rooms.map(room => `<span><b>${escapeHTML(room.group_name)}</b>${room.device_name ? ` · ${escapeHTML(room.device_name)}` : ' · shared profile (recreate its devices)'} · <span class="saved-room-code">${escapeHTML(room.code)}</span></span>`).join('');
+  root.innerHTML = rooms.map(room => `<span><b>${escapeHTML(room.group_name)}</b> · ${escapeHTML(room.device_name || '')} · <span class="saved-room-code">${escapeHTML(room.code)}</span></span>`).join('');
 }
 
 async function loadBypassRooms(prefetched = null) {

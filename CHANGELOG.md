@@ -3,6 +3,14 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.6.0] - 2026-09-09
+
+- Added an Amnezia QR option with native Xray JSON, preserving the XHTTP path that Amnezia's VLESS URI importer omits. Standard VLESS QR remains available for other clients.
+- Unified Xray and XHTTP settings in the text editor, including editable REALITY target, server names, default SNI and fingerprint. Device creation and editing support individual fingerprints without changing UUIDs or restarting Xray.
+- Added portable configuration download and replacement restore with drag-and-drop preview for groups, dates, devices, component settings and provider cookies. Restore installs required components and issues new connection profiles; keep the tab open until completion and reimport the new profiles afterward.
+- Improved narrow-screen device cards and dialogs; removed obsolete SNI endpoints and shared-room fallback code.
+- Documented trusted domain/IP certificates and automatic renewal for removing self-signed certificate warnings.
+
 ## [1.5.2] - 2026-09-09
 
 - Updated the pinned AmneziaWG engine to 3.1.20260828 and aligned generated profiles with fixed H1-H4 and equal S1-S4 compatibility defaults, Jc 6, and MTU 1280.

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -17,14 +16,14 @@ import (
 )
 
 const (
-	maxXrayRealityServerNames         = 32
-	maxXrayRealitySettingsRequestSize = 16 << 10
+	maxXrayRealityServerNames = 32
 )
 
 type xrayRealitySNIState struct {
 	DefaultSNI  string   `json:"default_sni"`
 	ServerNames []string `json:"server_names"`
 	Target      string   `json:"target"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
 }
 
 type xrayRealitySNIOps struct {
@@ -34,35 +33,6 @@ type xrayRealitySNIOps struct {
 	validateTarget   func(string) error
 	restartAndVerify func(xrayVariant, map[string]any) error
 	captureTraffic   func()
-}
-
-func decodeXrayRealitySettingsRequest(reader io.Reader) (string, []string, error) {
-	body, err := io.ReadAll(io.LimitReader(reader, maxXrayRealitySettingsRequestSize+1))
-	if err != nil || len(body) == 0 || len(body) > maxXrayRealitySettingsRequestSize {
-		return "", nil, errors.New("invalid REALITY settings request size")
-	}
-	var input struct {
-		Target      string   `json:"target"`
-		ServerNames []string `json:"server_names"`
-	}
-	if err := json.Unmarshal(body, &input); err != nil {
-		return "", nil, errors.New("invalid REALITY settings request")
-	}
-	return input.Target, input.ServerNames, nil
-}
-
-func decodeXrayRealitySNIRequest(reader io.Reader) (string, error) {
-	body, err := io.ReadAll(io.LimitReader(reader, 4<<10+1))
-	if err != nil || len(body) == 0 || len(body) > 4<<10 {
-		return "", errors.New("invalid SNI request size")
-	}
-	var input struct {
-		SNI string `json:"sni"`
-	}
-	if err := json.Unmarshal(body, &input); err != nil {
-		return "", errors.New("invalid SNI request")
-	}
-	return input.SNI, nil
 }
 
 func defaultXrayRealitySNIOps() xrayRealitySNIOps {
@@ -247,6 +217,7 @@ func readXrayRealitySNIState(variant xrayVariant) (map[string]any, []byte, xrayR
 	}
 	state := orderedXrayRealitySNIState(defaultSNI, names)
 	state.Target = target
+	state.Fingerprint = metadata.Fingerprint
 	return root, configBody, state, nil
 }
 
@@ -274,7 +245,7 @@ func loadDesiredXrayRealitySNIState(method string) (xrayRealitySNIState, bool, e
 		return xrayRealitySNIState{}, false, errors.New("saved Xray REALITY SNI settings are invalid")
 	}
 	defaultSNI, err := normalizeXrayRealitySNI(state.DefaultSNI)
-	if err != nil || defaultSNI != xrayRealityServerName {
+	if err != nil {
 		return xrayRealitySNIState{}, false, errors.New("saved Xray default SNI is invalid")
 	}
 	names, err := xrayRealityServerNames(state.ServerNames)
@@ -294,6 +265,7 @@ func loadDesiredXrayRealitySNIState(method string) (xrayRealitySNIState, bool, e
 	}
 	ordered := orderedXrayRealitySNIState(defaultSNI, names)
 	ordered.Target = target
+	ordered.Fingerprint = state.Fingerprint
 	return ordered, true, nil
 }
 
@@ -340,20 +312,8 @@ func getXrayRealitySNIState(variant xrayVariant) (xrayRealitySNIState, error) {
 	return state, err
 }
 
-func addXrayRealitySNI(variant xrayVariant, value string) (xrayRealitySNIState, error) {
-	return mutateXrayRealitySNI(variant, value, false, defaultXrayRealitySNIOps())
-}
-
-func removeXrayRealitySNI(variant xrayVariant, value string) (xrayRealitySNIState, error) {
-	return mutateXrayRealitySNI(variant, value, true, defaultXrayRealitySNIOps())
-}
-
-func setXrayRealityTarget(variant xrayVariant, value string) (xrayRealitySNIState, error) {
-	return mutateXrayRealityTarget(variant, value, defaultXrayRealitySNIOps())
-}
-
-func replaceXrayRealitySettings(variant xrayVariant, target string, serverNames []string) (xrayRealitySNIState, error) {
-	return mutateXrayRealitySettings(variant, target, serverNames, defaultXrayRealitySNIOps())
+func replaceXrayRealitySettings(variant xrayVariant, target string, serverNames []string, fingerprint string) (xrayRealitySNIState, error) {
+	return mutateXrayRealitySettings(variant, target, serverNames, defaultXrayRealitySNIOps(), fingerprint)
 }
 
 func normalizeRequestedXrayRealitySettings(target string, serverNames []string) (xrayRealitySNIState, error) {
@@ -365,19 +325,12 @@ func normalizeRequestedXrayRealitySettings(target string, serverNames []string) 
 	if err != nil {
 		return xrayRealitySNIState{}, err
 	}
-	foundDefault := false
-	for _, name := range normalizedNames {
-		foundDefault = foundDefault || name == xrayRealityServerName
-	}
-	if !foundDefault {
-		return xrayRealitySNIState{}, errors.New("the immutable default SNI must remain in serverNames")
-	}
-	next := orderedXrayRealitySNIState(xrayRealityServerName, normalizedNames)
+	next := orderedXrayRealitySNIState(normalizedNames[0], normalizedNames)
 	next.Target = normalizedTarget
 	return next, nil
 }
 
-func mutateXrayRealitySettings(variant xrayVariant, target string, serverNames []string, ops xrayRealitySNIOps) (xrayRealitySNIState, error) {
+func mutateXrayRealitySettings(variant xrayVariant, target string, serverNames []string, ops xrayRealitySNIOps, fingerprint string) (xrayRealitySNIState, error) {
 	xrayConfigMutationMu.Lock()
 	defer xrayConfigMutationMu.Unlock()
 
@@ -385,6 +338,7 @@ func mutateXrayRealitySettings(variant xrayVariant, target string, serverNames [
 	if err != nil {
 		return xrayRealitySNIState{}, err
 	}
+	next.Fingerprint = fingerprint
 	if !ops.owned(variant.Method) {
 		previous, _, err := loadDesiredXrayRealitySNIState(variant.Method)
 		if err != nil {
@@ -408,89 +362,15 @@ func mutateXrayRealitySettings(variant xrayVariant, target string, serverNames [
 	if reflect.DeepEqual(previous, next) {
 		return previous, nil
 	}
+	if previous.Target == next.Target && reflect.DeepEqual(previous.ServerNames, next.ServerNames) {
+		return next, saveDesiredXrayRealitySNIState(variant.Method, next)
+	}
 	if previous.Target != next.Target {
 		if err := ops.validateTarget(next.Target); err != nil {
 			return xrayRealitySNIState{}, err
 		}
 	}
 	return applyXrayRealitySettings(variant, root, previousBody, previous, next, ops)
-}
-
-func mutateXrayRealityTarget(variant xrayVariant, value string, ops xrayRealitySNIOps) (xrayRealitySNIState, error) {
-	xrayConfigMutationMu.Lock()
-	defer xrayConfigMutationMu.Unlock()
-
-	target, err := normalizeXrayRealityTarget(value)
-	if err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	if !ops.owned(variant.Method) {
-		state, _, err := loadDesiredXrayRealitySNIState(variant.Method)
-		if err != nil {
-			return xrayRealitySNIState{}, err
-		}
-		state.Target = target
-		if err := saveDesiredXrayRealitySNIState(variant.Method, state); err != nil {
-			return xrayRealitySNIState{}, err
-		}
-		return state, nil
-	}
-	if err := ops.verifyContainer(variant); err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	root, previousBody, previous, err := readXrayRealitySNIState(variant)
-	if err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	if previous.Target == target {
-		return previous, nil
-	}
-	if err := ops.validateTarget(target); err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	next := previous
-	next.Target = target
-	return applyXrayRealitySettings(variant, root, previousBody, previous, next, ops)
-}
-
-func mutateXrayRealitySNI(variant xrayVariant, value string, remove bool, ops xrayRealitySNIOps) (xrayRealitySNIState, error) {
-	xrayConfigMutationMu.Lock()
-	defer xrayConfigMutationMu.Unlock()
-
-	name, err := normalizeXrayRealitySNI(value)
-	if err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	if !ops.owned(variant.Method) {
-		previous, _, err := loadDesiredXrayRealitySNIState(variant.Method)
-		if err != nil {
-			return xrayRealitySNIState{}, err
-		}
-		next, err := nextXrayRealitySNIState(previous, name, remove)
-		if err != nil {
-			return xrayRealitySNIState{}, err
-		}
-		if err := saveDesiredXrayRealitySNIState(variant.Method, next); err != nil {
-			return xrayRealitySNIState{}, err
-		}
-		return next, nil
-	}
-	if err := ops.verifyContainer(variant); err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	root, previousBody, previous, err := readXrayRealitySNIState(variant)
-	if err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	nextState, err := nextXrayRealitySNIState(previous, name, remove)
-	if err != nil {
-		return xrayRealitySNIState{}, err
-	}
-	nextState.Target = previous.Target
-	if reflect.DeepEqual(nextState, previous) {
-		return previous, nil
-	}
-	return applyXrayRealitySettings(variant, root, previousBody, previous, nextState, ops)
 }
 
 func applyXrayRealitySettings(variant xrayVariant, root map[string]any, previousBody []byte, previous, nextState xrayRealitySNIState, ops xrayRealitySNIOps) (xrayRealitySNIState, error) {
@@ -549,43 +429,6 @@ func applyXrayRealitySettings(variant xrayVariant, root map[string]any, previous
 		}
 		return xrayRealitySNIState{}, rollbackDesired(fmt.Errorf("apply the updated Xray SNI list: %w; the previous configuration was restored", applyErr))
 	}
-}
-
-func nextXrayRealitySNIState(previous xrayRealitySNIState, name string, remove bool) (xrayRealitySNIState, error) {
-	present := false
-	for _, existing := range previous.ServerNames {
-		if existing == name {
-			present = true
-			break
-		}
-	}
-	if remove {
-		if name == previous.DefaultSNI {
-			return xrayRealitySNIState{}, errors.New("the default SNI cannot be removed")
-		}
-		if !present {
-			return previous, nil
-		}
-	} else {
-		if present {
-			return previous, nil
-		}
-		if len(previous.ServerNames) >= maxXrayRealityServerNames {
-			return xrayRealitySNIState{}, fmt.Errorf("no more than %d SNI values are allowed", maxXrayRealityServerNames)
-		}
-	}
-	names := make([]string, 0, len(previous.ServerNames)+1)
-	for _, existing := range previous.ServerNames {
-		if !remove || existing != name {
-			names = append(names, existing)
-		}
-	}
-	if !remove {
-		names = append(names, name)
-	}
-	next := orderedXrayRealitySNIState(previous.DefaultSNI, names)
-	next.Target = previous.Target
-	return next, nil
 }
 
 func configuredXrayRuntimeEmails(root map[string]any) (map[string]bool, error) {
