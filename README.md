@@ -106,6 +106,16 @@ sudo sbp-panel-uninstall
 
 Managed components keep running after panel removal. Remove them through the dashboard first if you want to remove everything.
 
+## Versioning
+
+Versions use `X.Y.Z`:
+
+| Segment | Meaning |
+|---|---|
+| `X` | A major release that may break compatibility |
+| `Y` | A backwards-compatible feature release |
+| `Z` | A compatible fix or small polish update |
+
 ## What's next?
 
 First, keep the panel simple and fix things that actually annoy people. Then there are a few bigger ideas:
