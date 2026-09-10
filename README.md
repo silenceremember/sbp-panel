@@ -3,10 +3,6 @@
 </p>
 
 <p align="center">
-  <strong>Your server. Your software. One panel.</strong>
-</p>
-
-<p align="center">
   <a href="https://github.com/silenceremember/sbp-panel/releases/latest"><img src="https://img.shields.io/github/v/release/silenceremember/sbp-panel?display_name=tag&amp;sort=semver" alt="Latest release"></a>
   <a href="https://github.com/silenceremember/sbp-panel/actions/workflows/release.yml"><img src="https://github.com/silenceremember/sbp-panel/actions/workflows/release.yml/badge.svg" alt="Build status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-EF9B47.svg" alt="Apache-2.0 license"></a>
@@ -21,262 +17,125 @@
 
 # Simple Bridge Panel
 
-SBP is a small self-hosted panel for preparing and managing a fresh Ubuntu VPN server. It installs supported components, creates client profiles, manages access and expiration, tracks current-month traffic, and performs health-checked updates from one dashboard.
+Got a server? Good. SBP helps you manage Xray, AmneziaWG and whitelist-bypass services so your friends can actually connect to it.
 
-SBP is not a VPN provider or hosted service. It manages third-party software on **your own server**.
+## What does it do?
 
-## What it manages
-
-- Server components and their lifecycle.
-- Groups, expiration, devices, credentials, and QR profiles.
-- Xray TCP, Xray XHTTP, and AmneziaWG access.
-- WB Stream, Yandex Telemost, DION, and VK Calls routing rooms.
-- CPU, memory, disk, uptime, network, and monthly traffic estimates.
+- **One dashboard:** components, server health, devices and monthly traffic. Also fits on your phone, because servers tend to need attention when you are nowhere near a desk.
+- **Groups and access:** give friends or a team their own devices, set an expiration date or leave access unlimited. Toggle individual devices when needed.
+- **Profiles to go:** copy credentials, show a QR code, or download a group's codes and check link in one file. Send it over.
+- **Moving servers?** Export your groups and settings, restore them on another SBP server, and share the newly generated profiles.
+- **Updates with a button:** update SBP and manage components from the panel. The terminal has earned a break.
 
 ## Panel preview
 
-Groups, devices, traffic, server health, components, and credentials all live on one dashboard. The screenshot is tall because the panel keeps everything in one place.
+A rather tall screenshot. Scroll responsibly.
 
 <details>
-<summary><strong>Open the full panel screenshot</strong></summary>
+<summary>Open the full dashboard screenshot</summary>
 
-This example is from an earlier release, so some labels and versions may differ from the current build.
+The preview is from an earlier release; some controls may look different today.
 
 <p align="center">
   <a href="docs/panel-preview.png">
-    <img src="docs/panel-preview.png" alt="Simple Bridge Panel dashboard preview" width="900">
+    <img src="docs/panel-preview.png" alt="Simple Bridge Panel dashboard" width="900">
   </a>
 </p>
 
 </details>
 
-## Components
+## Supported components
 
-| Component | Version | Purpose |
-|---|---:|---|
-| Network tuning | - | Validated TCP congestion control and queue discipline settings |
-| Docker | Ubuntu package | Isolated managed services |
-| [Xray](https://github.com/XTLS/Xray-core) | 26.3.27 | VLESS over TCP with REALITY and XTLS Vision |
-| [Xray](https://github.com/XTLS/Xray-core) XHTTP | 26.3.27 | VLESS over XHTTP with REALITY |
-| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | Protocol 3.1; engine 3.1.20260828 | AmneziaWG server and device profiles with conservative obfuscation defaults |
-| [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) | 0.3.8 | WB Stream, Telemost, DION, and VK Calls |
-
-SBP provides a management layer around these upstream projects; it does not create or own their protocols.
+| Component | What you get |
+|---|---|
+| [Xray](https://github.com/XTLS/Xray-core) | VLESS over TCP with REALITY and XTLS Vision |
+| Xray XHTTP | VLESS over XHTTP with REALITY, managed separately from TCP |
+| [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) | AmneziaWG 3.1 server and client profiles |
+| [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) | WB Stream, Yandex Telemost, DION and VK Calls |
+| Docker and network tuning | Install and manage the supporting server components |
 
 ## Requirements
 
-| Item | Requirement |
-|---|---|
-| Server | Linux amd64; Ubuntu 24.04 LTS is recommended and tested. Other compatible distributions may work but are not officially supported |
-| Access | Root or sudo over SSH |
-| Network | Directly reachable public IPv4 address |
-| Minimum | 1 vCPU, 1 GB RAM, 10 GB SSD |
-| Recommended | 2 vCPU, 2 GB RAM, 20 GB SSD for all components or several users |
+| | Minimum | Recommended |
+|---|---|---|
+| CPU | 1 vCPU | 2 vCPU |
+| RAM | 1 GB | 2 GB |
+| Storage | 10 GB SSD | 20 GB SSD |
 
-| Port | Protocol | Used by |
-|---:|---|---|
-| 9443 | TCP | SBP panel |
-| 443 | TCP | Xray |
-| 28443 | TCP | Xray XHTTP |
-| 48692 | UDP | AmneziaWG |
+Use a **fresh Ubuntu 24.04 LTS server (amd64)** with a directly reachable public IPv4 address and root or sudo access. Existing VPN installations are not adopted by SBP.
 
-A clean server is recommended. Existing VPN software, containers, occupied ports, and custom networking are treated as external and are not adopted by SBP.
+Allow **9443/TCP** for the panel and the ports for your chosen components: **443/TCP** for Xray, **28443/TCP** for XHTTP and **48692/UDP** for AmneziaWG.
 
 ## Install in one command
 
-Connect to the server over SSH and run:
+Connect to your server over SSH and run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/silenceremember/sbp-panel/main/install.sh | sudo bash
 ```
 
-Then open:
+Open `https://YOUR_SERVER_IP:9443`. Sign in as `admin` with the password you set during installation. The default self-signed certificate causes a browser warning.
 
-```text
-https://YOUR_SERVER_IP:9443
+### First connection
+
+1. Open **Components**, review settings, and install the components you need. Routing integrations require their provider cookies.
+2. Create a group and add a device.
+3. Copy its profile or scan its QR code in a compatible client. For AmneziaVPN's Xray import, choose **Amnezia QR**.
+
+| Profiles | Clients |
+|---|---|
+| Xray TCP and XHTTP | [v2rayN](https://github.com/2dust/v2rayN) for Windows, [v2rayNG](https://github.com/2dust/v2rayNG) for Android |
+| AmneziaWG | [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client) |
+| Routing integrations | [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass) |
+
+## Update and uninstall
+
+Use **Check for updates** in the panel or run:
+
+```bash
+sudo sbp-panel-update
 ```
 
-| Login detail | Value |
-|---|---|
-| Username | `admin` |
-| Password | The password entered during installation |
-| Certificate | Self-signed by default; the browser shows a warning on the first visit |
+Stable releases are the default; enable **Pre-release** only to try test builds. See [release notes](CHANGELOG.md).
 
-## First steps
+To uninstall:
 
-1. Open **Components** and review **Settings** for the components you plan to use. Settings are global desired server configuration and remain available before and after installation.
-2. Install Network tuning, Docker, and the VPN methods you need. Upload the authorized cookie JSON from **Settings** for each required routing component.
-3. Create a group and choose an expiration date or unlimited access.
-4. Add a device and select its connection method.
-5. Copy the profile or scan its QR code and import it into a client. AmneziaWG QR codes use the native configuration accepted by the AmneziaVPN and AmneziaWG scanners; the Copy action keeps the selected text format.
+```bash
+sudo sbp-panel-uninstall
+```
 
-Profiles use the readable name `SBP · Group name · Device name`. Each profile also records its protocol version. **Edit** changes the device name. Recreate a device when it needs a newly issued profile.
+Managed components keep running after panel removal. Remove them through the dashboard first if you want to remove everything.
 
-Routing integrations create one independent room for each device. If saved rooms differ from that current layout, the routing component exposes one global **Update** that reconciles every affected device; changed links must be copied again.
+## What's next?
 
-| Profile type | Suggested client |
-|---|---|
-| Xray TCP or XHTTP | [v2rayN 7.20.4](https://github.com/2dust/v2rayN/releases/tag/7.20.4) for Windows; [v2rayNG 2.2.6](https://github.com/2dust/v2rayNG/releases/tag/2.2.6) for Android |
-| AmneziaWG | [AmneziaVPN 5.0.1.5](https://github.com/amnezia-vpn/amnezia-client/releases/tag/5.0.1.5) for Windows or Android |
-| Routing integrations | [Whitelist Bypass 0.3.8](https://github.com/kulikov0/whitelist-bypass/releases/tag/v0.3.8) for Windows or Android |
+First, keep the panel simple and fix things that actually annoy people. Then there are a few bigger ideas:
 
-## Operations
+- **SBP Linker:** manage several SBP servers in one place.
+- **Telegram bot:** payments, renewals and automatic access delivery.
+- **SBP VPN client:** keep connections across supported protocols in one app.
 
-| Action | Command or UI | Result |
-|---|---|---|
-| Update SBP | `sudo sbp-panel-update` or **Check for updates** | Checks stable releases by default, verifies size and SHA-256, checks health, and rolls back on failure |
-| Try prereleases | Enable **Pre-release** beside **Check for updates** | Immediately scans stable and GitHub prerelease builds; the command-line updater stays stable-only |
-| Remove the panel | `sudo sbp-panel-uninstall` | Removes SBP and its panel data, but leaves managed components running |
-| Return to a clean server | Remove components in the dashboard, then uninstall SBP | Removes panel-owned components in safe dependency order before panel removal |
+Still on the drawing board. Please do not buy a server for the imaginary Telegram bot just yet.
 
-## Operational behavior
+## Contributing
 
-| Area | Behavior |
-|---|---|
-| Device changes | Edit changes the name; recreate a device to issue a new profile; runtime membership changes live without restarting shared containers |
-| Component profile revisions | **Update** appears when stored profiles or routing rooms differ from the current component revision and layout; one component action reconciles every affected profile |
-| Component isolation | Xray TCP and XHTTP use separate containers, ports, configs, and traffic namespaces |
-| Component lifecycle | An active install, update, or removal is restored after a browser reload and conflicting actions remain disabled until it finishes |
-| Xray profile update | Global **Update** rebuilds every matching link from the component's current managed server settings and publishes the set atomically; UUIDs, runtime users, and the running container do not change |
-| AmneziaWG component update | An engine or server-configuration revision replaces the complete deployment and rotates all keys; a client-configuration revision refreshes every stored profile atomically without changing server keys, peers, or the container; both require users to import the newly issued profiles |
-| Network tuning settings | The allowlisted `modprobe` and `sysctl` payload is editable before or after installation; missing lines return to validated defaults and an installed component is reapplied with rollback on failure |
-| Docker settings | Install, repair, or remove Docker Compose v2; verified external Ubuntu packages can be removed without adoption, while unknown CLI plugins remain untouched; includes a read-only container list |
-| REALITY settings | Each Xray component keeps its default profile SNI and can save a validated TLS target plus additional server-side SNI hostnames before installation or apply them to its installed managed container |
-| AmneziaWG settings | Server-side AWG obfuscation parameters are available before and after installation; profile-affecting changes are refused while peers exist |
-| Routing settings | Each routing component keeps its own cookie JSON upload, clear action, and saved rooms under **Components > Settings** |
-| Expiration | Expired groups are reconciled with runtime credentials and routing access |
-| Routing | One room and bounded managed container per device, with a forward-retryable global Update for layout drift and per-device traffic estimates rolled up into the group total |
-| Traffic | Current UTC month only; operational estimates, not billing records |
-| Persistent state | No historical traffic archive, automatic backups, editable source tree, or build toolchain |
-| Logs | Persistent managed Docker logging is disabled; SBP services do not write persistent application logs |
-| Administration | One fixed administrator account, no password recovery flow; administrator access is root-capable |
+Found a bug, have an idea, or see something that could be clearer? [Open an issue](https://github.com/silenceremember/sbp-panel/issues) or send a focused pull request. Your passwords and cookies are not - keep those to yourself.
 
-<p align="center">
-  <img src="docs/suspiciously-big-pizza.svg" alt="Suspiciously Big Pizza" width="560">
-</p>
+Thinking about making a fork? Please consider contributing here first. One stronger project is easier for everyone to use and maintain.
 
 ## FAQ
 
 | Question | Answer |
 |---|---|
-| Is "SBP Panel" technically "Simple Bridge Panel Panel"? | Yes, a bit like "PUBG: Battlegrounds." The product is Simple Bridge Panel; `sbp-panel` is still the repository and command name. |
+| Is "SBP Panel" technically "Simple Bridge Panel Panel"? | Yes, a bit like "PUBG: Battlegrounds." We have made peace with it. |
 | What does SBP stand for? | Simple Bridge Panel. Suspiciously Big Pizza is also an acceptable answer. |
-| Is SBP a VPN provider? | Nope. It helps you manage supported software on your own server. |
-| What remains after panel uninstall? | Managed components keep running on purpose. Remove them in the dashboard first if you want a clean server. |
+| Is SBP a VPN provider? | Nope. You bring the server; SBP helps you manage the software. |
 
-## Contributing
-
-Found a bug, have an idea, or see something that could be clearer? Issues, diagnostics, documentation fixes, tests, and focused pull requests are all welcome.
-
-Thinking about making a fork? Please consider contributing here first. One stronger project is easier for everyone to use and maintain.
-
-Never submit real server addresses, cookies, private keys, client credentials, databases, or session data.
-
-SBP uses Go 1.26.7:
-
-```bash
-gofmt -w .
-go test ./...
-bash deploy/test_scripts.sh
-```
-
-## Versioning
-
-Versions use `X.Y.Z`:
-
-| Segment | Meaning |
-|---|---|
-| `X` | A major release that may break compatibility |
-| `Y` | A backwards-compatible feature release |
-| `Z` | A compatible fix or small polish update |
-
-See the concise release history in [CHANGELOG.md](CHANGELOG.md).
-
-**Pre-release builds are strongly discouraged for normal use.** They remain in the release history only for developer testing, investigation, and convenient downloads, and may contain bugs or incomplete work.
-
-The current AmneziaWG 3.1 preset uses H1-H4 = 1, 2, 3, 4, S1-S4 = 12, a unique header-protection key, Jc = 6, I1, and client MTU 1280. Random trailers and cookie suppression remain disabled. These defaults follow the upstream compatibility guidance; they do not guarantee connectivity on every network.
-
-To apply a prerelease: enable **Pre-release** next to **Check for updates**, update SBP, then use **Components > AmneziaWG > Update**. This replaces the outdated engine/configuration and reissues every device profile, including disabled devices. Users must import the new profiles. A current deployment does not offer a redundant engine update. The stable update channel continues to exclude prereleases.
-
-
-## Plans
-
-| Priority | What it means |
-|---|---|
-| Everyday use | Keep setup, updates, and routine management as simple as possible |
-| Reliability | Fix real problems, improve recovery, and keep existing installations predictable |
-| Compatibility | Maintain the supported components and Ubuntu 24.04 target without vague promises |
-| New ideas | Add larger features only when people have a practical need for them |
-
-### Planned projects
-
-| Project | Idea |
-|---|---|
-| SBP Linker | Bring several SBP servers together in one place and make larger deployments easier to manage |
-| Telegram bot | Handle payments, renewals, and automatic access delivery |
-| SBP VPN client | Keep connections produced by SBP across supported protocols together in one simple app |
-
-## Third-party software
-
-SBP integrates with [Xray-core](https://github.com/XTLS/Xray-core), [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go), [AmneziaVPN](https://github.com/amnezia-vpn/amnezia-client), [Whitelist Bypass](https://github.com/kulikov0/whitelist-bypass), [v2rayN](https://github.com/2dust/v2rayN), and [v2rayNG](https://github.com/2dust/v2rayNG).
-
-Their names, trademarks, software, and services belong to their respective owners and remain governed by their own licenses and terms. Inclusion does not imply affiliation or endorsement.
+<p align="center">
+  <img src="docs/suspiciously-big-pizza.svg" alt="Suspiciously Big Pizza" width="560">
+</p>
 
 ## License
 
-Decided to fork SBP or use some of its code elsewhere? Please include a link to the [original project](https://github.com/silenceremember/sbp-panel). Other than that, it is the standard [Apache License 2.0](LICENSE) - keep the license and attribution from [NOTICE](NOTICE) where required.
+[Apache License 2.0](LICENSE) - keep the license and attribution from [NOTICE](NOTICE) where required. A link back to the [original project](https://github.com/silenceremember/sbp-panel) is appreciated, too.
 
-## Profiles and portable configuration
-
-Xray and XHTTP use standard VLESS links for Copy and QR. Choose **Amnezia QR**
-for native Xray JSON: AmneziaVPN 5.0.1.5 and 5.0.2.1 do not recognize plain
-VLESS URIs in their QR import path, and their URI parser omits XHTTP path.
-Native JSON includes that path and keeps Vision flow only on TCP.
-
-Components > Settings uses a JSON editor for each Xray variant. `target` and
-`server_names` configure REALITY; `default_sni` and `fingerprint` control new
-profiles. Saving automatically refreshes existing links while keeping each UUID
-and fingerprint. Users must import changed links.
-Fingerprint is also selectable when creating or editing a device and remains
-editable in the client. No SNI or fingerprint guarantees reachability on every
-network; check the target from the actual server and the client's transport.
-
-AmneziaWG settings also refresh all profiles automatically, including disabled
-devices, while keeping keys, names and group expiration dates. Server settings
-are rolled back if rendering or publishing the profiles fails. No manual device
-deletion is needed. Reimport profiles after changing shared obfuscation values.
-The editor displays concrete defaults: Jc 6, Jmin 10, Jmax 50, S1-S4 12,
-H1-H4 1/2/3/4, RandomTrailers off and DisableCookies off. HeaderProtectionKey is
-generated once, displayed explicitly, and retained by Restore defaults.
-The header/padding choices follow the [AWG 3.1 compatibility guidance](https://docs.amnezia.org/documentation/amnezia-wg/).
-
-New names follow `Country - Group - Protocol`, for example
-`Ireland - Admin - Amnezia` and `Ireland - Admin - Amnezia2`. Selecting another
-protocol updates the suggestion until you enter a custom name. Existing names
-are preserved. Country is detected on startup through ipapi.co and cached;
-edit it through the header's server settings if geolocation is unavailable or
-incorrect. The fallback prefix is `Server` until a country is available.
-
-**Configuration** exports one JSON file containing groups, contact names,
-expiration dates, enabled devices, component settings and provider cookies.
-The preview shows the groups/devices to replace before confirmation. Restore
-uses normal component install and device operations, downloads pinned images,
-and generates credentials for the destination server. Keep the tab open until
-completion; a failed restore reports the failed step and can be retried with
-the same file. Existing panel login and TLS identity are not copied. Provider
-cookies are secrets: store this export privately. Old connection keys and traffic
-history are deliberately not portable. Expired provider cookies must be replaced.
-
-## Browser certificate warning
-
-The default certificate is self-signed. A publicly trusted certificate matching
-the address used in the browser removes the certificate warning. Domain names
-are supported, and Let's Encrypt also issues short-lived IP certificates:
-https://letsencrypt.org/2026/03/11/shorter-certs-certbot
-
-For an IP certificate, use Certbot 5.4+ with the `shortlived` profile and an
-HTTP-01 challenge on port 80. Keep automatic renewal enabled. A deploy hook must
-install the renewed full chain and key into the configured `tls_cert`/`tls_key`
-paths with the existing panel group permissions, then restart `vpn-panel`.
-Certificates cannot be fixed by hiding the browser warning or disabling TLS
-verification. The panel updater preserves these certificate files.
+Integrated projects retain their own licenses and trademarks. Inclusion does not imply affiliation or endorsement.
