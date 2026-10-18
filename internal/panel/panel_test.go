@@ -604,6 +604,62 @@ func TestDiscoveryOffersRoutingUpdateForSharedRoomLayout(t *testing.T) {
 	}
 }
 
+func TestDiscoveryOrdersRoutingEngineUpgradeBeforeRoomReconcile(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, _ := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	deviceID, _ := db.CreateDevice(groupID, "Phone", "bypass-wb", "wbstream://room", "")
+	if err := db.SetDeviceCredential(deviceID, "wbstream://room", 1, "0.3.8"); err != nil {
+		t.Fatal(err)
+	}
+	canUpdate := true
+	rooms := `{"rooms":[]}`
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := fmt.Sprintf(`{"components":[{"id":"bypass-wb","installed":true,"external":false,"can_update":%t,"profile_version":"0.4.4","profile_generation":1}]}`, canUpdate)
+		if request.URL.Path == "/v1/bypass/rooms" {
+			body = rooms
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	discover := func() (string, int) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		s.discovery(response, httptest.NewRequest(http.MethodGet, "/api/discovery", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+		}
+		var result struct {
+			Components []struct {
+				CanUpdate        bool   `json:"can_update"`
+				UpdateKind       string `json:"update_kind"`
+				ProfilesToUpdate int    `json:"profiles_to_update"`
+			} `json:"components"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Components) != 1 || !result.Components[0].CanUpdate {
+			t.Fatalf("no update offered: %#v", result.Components)
+		}
+		return result.Components[0].UpdateKind, result.Components[0].ProfilesToUpdate
+	}
+	if kind, _ := discover(); kind != "upgrade" {
+		t.Fatalf("engine upgrade must come before room drift, got %q", kind)
+	}
+	canUpdate = false
+	if kind, count := discover(); kind != "routing" || count != 1 {
+		t.Fatalf("missing room must be reconciled, got %q/%d", kind, count)
+	}
+	rooms = fmt.Sprintf(`{"rooms":[{"group_id":%d,"device_id":%d,"provider":"wbstream","code":"room"}]}`, groupID, deviceID)
+	if kind, count := discover(); kind != "routing" || count != 1 {
+		t.Fatalf("matching room with an old revision must offer a revision reconcile, got %q/%d", kind, count)
+	}
+}
+
 func TestRoutingRoomDriftRejectsMismatchedAndOrphanedRoomsWithoutCrossingProviders(t *testing.T) {
 	spec := routingComponentSpecs["bypass-wb"]
 	devices := []store.Device{{ID: 7, GroupID: 3, Method: "bypass-wb", Credential: "wbstream://current"}}

@@ -1363,6 +1363,7 @@ function bypassSettingsDialog(component) {
   let clear = false;
   body.innerHTML = `
     <p class="settings-notice">Choose the account cookie JSON for ${escapeHTML(settings.label)}, then Save to apply it.</p>
+    ${settings.provider === 'dion' ? '<p class="muted">DION replaces its refresh token on every use, so each device room keeps a private copy. For more than one device, include email and password in the file so every room can sign in again.</p>' : ''}
     ${fileDropHTML('Choose or drop a cookie JSON file')}
     <p class="muted" data-cookie-choice>No changes selected.</p>
     <div class="saved-rooms"><span class="saved-rooms-title">Rooms</span><div class="saved-room-list" data-bypass-rooms></div></div>
@@ -1603,6 +1604,11 @@ async function loadDiscovery(prefetched = null) {
       row.querySelector('[data-remove-external]')?.addEventListener('click', event => externalRemovalPrompt(component, event.currentTarget));
       row.querySelector('[data-component-update]')?.addEventListener('click', async event => {
         if (component.update_kind === 'upgrade') {
+          if (isBypass) {
+            if (!confirm(`Update ${component.name} to the pinned engine? Running rooms restart briefly and keep their links.`)) return;
+            await runComponentLifecycle(component, event.currentTarget, 'install');
+            return;
+          }
           if (component.id !== 'amneziawg') return;
           if (!confirm('Update the AmneziaWG engine and configuration? The server identity and every device key will be replaced. All users must import their newly issued profiles.')) return;
           await runComponentUpdate(component, event.currentTarget);
@@ -1617,7 +1623,7 @@ async function loadDiscovery(prefetched = null) {
           return;
         }
         if (component.update_kind === 'routing') {
-          if (!confirm(`Bring every ${component.name} room to the current one-room-per-device layout? Links that still use another layout will change and must be copied again.`)) return;
+          if (!confirm(`Reconcile every ${component.name} room with the current one-room-per-device layout? Rooms that already match keep their links. Missing or mismatched rooms are recreated, and their links must be copied again.`)) return;
           await runComponentProfileRefresh(component, event.currentTarget);
           return;
         }

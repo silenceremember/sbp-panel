@@ -1354,15 +1354,18 @@ func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
 			external, _ := component["external"].(bool)
 			canUpgrade, _ := component["can_update"].(bool)
 			routingDrift := 0
-			if spec, routing := routingComponentSpecs[id]; routing && installed && !external {
+			_, routing := routingComponentSpecs[id]
+			if spec, ok := routingComponentSpecs[id]; ok && installed && !external {
 				routingDrift = routingRoomDrift(spec, routingDevices, routingRooms)
 			}
-			if routingDrift > 0 {
+			// An engine upgrade goes first: rooms reconciled on an outdated
+			// routing engine may fail against the provider.
+			if canUpgrade {
+				component["update_kind"] = "upgrade"
+			} else if routingDrift > 0 {
 				component["can_update"] = true
 				component["update_kind"] = "routing"
 				component["profiles_to_update"] = routingDrift
-			} else if canUpgrade {
-				component["update_kind"] = "upgrade"
 			} else if installed && !external && profileVersion != "" && profileGeneration > 0 {
 				count, err := s.db.CountProfilesNotAtRevision(method, profileVersion, profileGeneration)
 				if err != nil {
@@ -1373,6 +1376,12 @@ func (s *server) discovery(w http.ResponseWriter, r *http.Request) {
 					if _, ok := componentProfileRefreshers[id]; ok {
 						component["can_update"] = true
 						component["update_kind"] = "profile"
+						component["profiles_to_update"] = count
+					} else if routing {
+						// Rooms already match; reconciling only records the
+						// current engine revision and keeps every link.
+						component["can_update"] = true
+						component["update_kind"] = "routing"
 						component["profiles_to_update"] = count
 					}
 				}

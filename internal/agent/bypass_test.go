@@ -3,7 +3,10 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/silenceremember/sbp-panel/internal/config"
 )
 
 func TestSavedBypassRoomsPreservesConfiguredRooms(t *testing.T) {
@@ -122,5 +125,66 @@ func TestBypassDeviceResourceNamesAreStableAndSeparated(t *testing.T) {
 	}
 	if first == second || filepath.Base(first) != "11" || filepath.Base(second) != "12" {
 		t.Fatalf("device paths are not separated: %q %q", first, second)
+	}
+}
+
+func TestBypassImagesUsePinnedAndLegacyTags(t *testing.T) {
+	if got := bypassImage("wb"); got != "vpn-panel/whitelist-bypass-wb:"+bypassVersion {
+		t.Fatalf("current image = %q", got)
+	}
+	if got := bypassLegacyImages("dion"); !reflect.DeepEqual(got, []string{"vpn-panel/whitelist-bypass-dion:0.3.8"}) {
+		t.Fatalf("legacy images = %#v", got)
+	}
+}
+
+func TestBypassDeviceCookiesShareReadOnlyUploadForStatelessProviders(t *testing.T) {
+	c := config.Config{BypassSecretsDir: t.TempDir()}
+	dir := t.TempDir()
+	mounts, cookies, err := bypassDeviceCookies("wb", dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"-v", filepath.Join(c.BypassSecretsDir, "wbstream", "cookies.json") + ":/run/secrets/cookies.json:ro"}
+	if !reflect.DeepEqual(mounts, want) || cookies != "/run/secrets/cookies.json" {
+		t.Fatalf("mounts=%#v cookies=%q", mounts, cookies)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cookies.json")); !os.IsNotExist(err) {
+		t.Fatalf("stateless provider received a private copy: %v", err)
+	}
+}
+
+func TestBypassDeviceCookiesGiveDIONAPrivateWritableCopy(t *testing.T) {
+	c := config.Config{BypassSecretsDir: t.TempDir()}
+	shared := filepath.Join(c.BypassSecretsDir, "dion", "cookies.json")
+	if err := os.MkdirAll(filepath.Dir(shared), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shared, []byte(`{"email":"a","password":"b","cookies":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	mounts, cookies, err := bypassDeviceCookies("dion", dir, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(mounts, []string{"-v", dir + ":/data"}) || cookies != "/data/cookies.json" {
+		t.Fatalf("mounts=%#v cookies=%q", mounts, cookies)
+	}
+	private := filepath.Join(dir, "cookies.json")
+	if body, err := os.ReadFile(private); err != nil || string(body) != `{"email":"a","password":"b","cookies":[]}` {
+		t.Fatalf("private copy = %q, %v", body, err)
+	}
+	// A rotated private copy survives restarts; only a new upload replaces it.
+	if err := os.WriteFile(private, []byte("rotated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := bypassDeviceCookies("dion", dir, c); err != nil {
+		t.Fatal(err)
+	}
+	if body, _ := os.ReadFile(private); string(body) != "rotated" {
+		t.Fatalf("rotated copy was overwritten: %q", body)
+	}
+	if _, err := os.Stat(private + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary copy left behind: %v", err)
 	}
 }

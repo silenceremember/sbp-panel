@@ -75,13 +75,42 @@ func TestProtocolComponentsExposeMachineReadableProfileVersions(t *testing.T) {
 	}{
 		"xray": {version: "26.3.27", generation: 1}, "xray-xhttp": {version: "26.3.27", generation: 1},
 		"amneziawg": {version: "3.1", generation: amneziaWGProfileGeneration},
-		"bypass-wb": {version: "0.3.8", generation: 1}, "bypass-telemost": {version: "0.3.8", generation: 1},
-		"bypass-dion": {version: "0.3.8", generation: 1}, "bypass-vk": {version: "0.3.8", generation: 1},
+		"bypass-wb": {version: bypassVersion, generation: 1}, "bypass-telemost": {version: bypassVersion, generation: 1},
+		"bypass-dion": {version: bypassVersion, generation: 1}, "bypass-vk": {version: bypassVersion, generation: 1},
 	}
 	for id, expected := range want {
 		component := componentState(t, components, id)
 		if component.ProfileVersion != expected.version || component.ProfileGeneration != expected.generation || component.CanUpdate {
 			t.Errorf("%s profile metadata = %#v, want revision %s/%d without an agent-side update decision", id, component, expected.version, expected.generation)
 		}
+	}
+}
+
+func TestOwnedLegacyBypassImageOffersInPlaceUpdate(t *testing.T) {
+	isolateComponentOwnership(t)
+	if err := markComponentOwned("bypass-wb", nil); err != nil {
+		t.Fatal(err)
+	}
+	legacy := bypassImageVersion("wb", bypassLegacyVersions[0])
+	discovery := Discovery{DockerAvailable: true, images: map[string]bool{legacy: true, bypassImageVersion("vk", bypassLegacyVersions[0]): true}}
+	components := componentStates(discovery, true)
+	wb := componentState(t, components, "bypass-wb")
+	if !wb.Installed || wb.External || !wb.CanUpdate || !wb.CanUninstall || wb.Version != bypassLegacyVersions[0] || wb.ProfileVersion != bypassVersion {
+		t.Fatalf("owned legacy install state = %#v", wb)
+	}
+	vk := componentState(t, components, "bypass-vk")
+	if !vk.External || vk.Installed || vk.CanUpdate || vk.CanInstall {
+		t.Fatalf("unowned legacy image state = %#v", vk)
+	}
+
+	discovery.images[bypassImage("wb")] = true
+	wb = componentState(t, componentStates(discovery, true), "bypass-wb")
+	if !wb.Installed || !wb.CanUpdate || wb.Version != bypassVersion+" (pinned)" {
+		t.Fatalf("interrupted update must stay retryable: %#v", wb)
+	}
+	delete(discovery.images, legacy)
+	wb = componentState(t, componentStates(discovery, true), "bypass-wb")
+	if !wb.Installed || wb.CanUpdate || wb.Note != "" {
+		t.Fatalf("current install state = %#v", wb)
 	}
 }

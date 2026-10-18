@@ -727,29 +727,41 @@ func componentStates(d Discovery, bbr bool) []Component {
 	if awgExternal {
 		awgNote = "An external AmneziaWG container was detected. SBP will not change or remove it."
 	}
-	bypassState := func(provider string) (bool, bool, string) {
-		_, owned := componentOwnership("bypass-" + provider)
-		installed := owned && hasImage(bypassImage(provider))
-		external := !installed && (hasLike("bypass-"+provider) || hasImage(bypassImage(provider)))
-		if external {
-			return false, true, "External routing resources were detected. SBP will not change or remove them."
+	bypassState := func(provider, id, name, description string) Component {
+		_, owned := componentOwnership(id)
+		current := hasImage(bypassImage(provider))
+		legacy := ""
+		for _, version := range bypassLegacyVersions {
+			if hasImage(bypassImageVersion(provider, version)) {
+				legacy = version
+			}
 		}
-		return installed, false, ""
+		component := Component{ID: id, Name: name, Version: bypassVersion + " (pinned)", ProfileVersion: bypassVersion, ProfileGeneration: 1, Description: description}
+		component.Installed = owned && (current || legacy != "")
+		component.External = !component.Installed && (hasLike(id) || current || legacy != "")
+		component.CanInstall = !component.External
+		component.CanUninstall = component.Installed
+		if component.External {
+			component.Note = "External routing resources were detected. SBP will not change or remove them."
+		} else if component.Installed && legacy != "" {
+			component.CanUpdate = true
+			if !current {
+				component.Version = legacy
+			}
+			component.Note = "Update to " + bypassVersion + ". Existing rooms keep their links."
+		}
+		return component
 	}
-	wbInstalled, wbExternal, wbNote := bypassState("wb")
-	telemostInstalled, telemostExternal, telemostNote := bypassState("telemost")
-	dionInstalled, dionExternal, dionNote := bypassState("dion")
-	vkInstalled, vkExternal, vkNote := bypassState("vk")
 	return []Component{
 		{ID: "tweaks", Name: "Network tuning", Installed: tweaksOwned, External: tweaksExternal, CanRemoveExternal: tweaksExternal, CanInstall: !tweaksExternal, CanUninstall: tweaksOwned, Description: "Applies validated TCP congestion control and queue discipline settings at startup to improve throughput and responsiveness under load.", Note: tweaksNote},
 		{ID: "docker", Name: "Docker", Installed: d.DockerAvailable && dockerOwned, External: dockerExternal, CanRemoveExternal: dockerExternal && !dockerComposePresent, CanInstall: !dockerExternal, CanUninstall: d.DockerAvailable && dockerOwned && len(names) == 0 && len(d.images) == 0 && !dockerComposePresent, Description: "Provides the isolated container runtime used by SBP-managed network components.", Note: dockerNote},
 		{ID: "xray", Name: "Xray · VLESS + REALITY", Installed: xrayManaged, External: xrayExternal, CanInstall: !xrayExternal, CanUninstall: xrayManaged, Version: "26.3.27", ProfileVersion: "26.3.27", ProfileGeneration: 1, Description: "Provides VLESS connectivity over TCP with REALITY and XTLS Vision on port 443. Runs in a pinned, independently managed Docker container.", Note: xrayNote},
 		{ID: "xray-xhttp", Name: "Xray · VLESS + XHTTP + REALITY", Installed: xhttpManaged, External: xhttpExternal, CanInstall: !xhttpExternal, CanUninstall: xhttpManaged, Version: "26.3.27", ProfileVersion: "26.3.27", ProfileGeneration: 1, Description: "Provides VLESS connectivity over XHTTP with REALITY on port 28443. Runs in a pinned Docker container independently from the TCP variant.", Note: xhttpNote},
 		{ID: "amneziawg", Name: "AmneziaWG", Installed: awgManaged, External: awgExternal, CanInstall: !awgExternal, CanUninstall: awgManaged, CanUpdate: awgManaged && awgNeedsUpdate, Version: awgVersionText, ProfileVersion: "3.1", ProfileGeneration: amneziaWGProfileGeneration, Description: "Provides an AmneziaWG 3.1 encrypted tunnel and compatible device profiles. Runs in an independently managed Docker container.", Note: awgNote},
-		{ID: "bypass-wb", Name: "WB Stream", Installed: wbInstalled, External: wbExternal, CanInstall: !wbExternal, CanUninstall: wbInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated WB Stream connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: wbNote},
-		{ID: "bypass-telemost", Name: "Yandex Telemost", Installed: telemostInstalled, External: telemostExternal, CanInstall: !telemostExternal, CanUninstall: telemostInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated Yandex Telemost connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: telemostNote},
-		{ID: "bypass-dion", Name: "DION", Installed: dionInstalled, External: dionExternal, CanInstall: !dionExternal, CanUninstall: dionInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated DION connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: dionNote},
-		{ID: "bypass-vk", Name: "VK Calls", Installed: vkInstalled, External: vkExternal, CanInstall: !vkExternal, CanUninstall: vkInstalled, Version: "0.3.8 (pinned)", ProfileVersion: "0.3.8", ProfileGeneration: 1, Description: "Creates one dedicated VK Calls connection per device with per-device traffic tracking. Requires uploaded account cookies.", Note: vkNote},
+		bypassState("wb", "bypass-wb", "WB Stream", "Creates one dedicated WB Stream connection per device with per-device traffic tracking. Requires uploaded account cookies."),
+		bypassState("telemost", "bypass-telemost", "Yandex Telemost", "Creates one dedicated Yandex Telemost connection per device with per-device traffic tracking. Requires uploaded account cookies."),
+		bypassState("dion", "bypass-dion", "DION", "Creates one dedicated DION connection per device with per-device traffic tracking. Requires uploaded account cookies."),
+		bypassState("vk", "bypass-vk", "VK Calls", "Creates one dedicated VK Calls connection per device with per-device traffic tracking. Requires uploaded account cookies."),
 	}
 }
 
@@ -1773,7 +1785,7 @@ func uninstallComponent(id string, c config.Config) (string, error) {
 		if err := removeBypassContainersStrict(provider); err != nil {
 			return "", err
 		}
-		if err := removeImagesStrict(bypassImage(provider)); err != nil {
+		if err := removeImagesStrict(append([]string{bypassImage(provider)}, bypassLegacyImages(provider)...)...); err != nil {
 			return "", err
 		}
 		if err := os.RemoveAll(filepath.Join("/opt/vpn-panel-managed", "bypass-"+provider)); err != nil {
@@ -2163,8 +2175,13 @@ func installAmneziaWG() (string, error) {
 	return "AmneziaWG 3.1 installed. Add the first device from the panel.", nil
 }
 
-const wbReleaseURL = "https://github.com/kulikov0/whitelist-bypass/releases/download/v0.3.8/whitelist-bypass-cli-linux-x64.zip"
-const wbReleaseSHA256 = "7180d2ef206dfa537cf2ae2303454fb5c551df2e045d5e99b5b9b9ed1af8e058"
+const bypassVersion = "0.4.4"
+const wbReleaseURL = "https://github.com/kulikov0/whitelist-bypass/releases/download/v" + bypassVersion + "/whitelist-bypass-cli-linux-x64.zip"
+const wbReleaseSHA256 = "4d4b748eefbbdb338ec10927b9acc79947fe40f3ec0128825c71409bd1d873f7"
+
+// Image tags built by earlier SBP releases. An owned install that still has
+// one of them is offered an in-place update instead of being reported external.
+var bypassLegacyVersions = []string{"0.3.8"}
 
 func downloadPinned(url, expectedSHA string, limit int64) ([]byte, error) {
 	client := &http.Client{Timeout: 3 * time.Minute}
@@ -2218,7 +2235,26 @@ var bypassSpecs = map[string]bypassSpec{
 }
 
 func bypassImage(provider string) string {
-	return "vpn-panel/whitelist-bypass-" + provider + ":0.3.8"
+	return bypassImageVersion(provider, bypassVersion)
+}
+
+func bypassImageVersion(provider, version string) string {
+	return "vpn-panel/whitelist-bypass-" + provider + ":" + version
+}
+
+func bypassLegacyImages(provider string) []string {
+	images := make([]string, 0, len(bypassLegacyVersions))
+	for _, version := range bypassLegacyVersions {
+		images = append(images, bypassImageVersion(provider, version))
+	}
+	return images
+}
+
+// bypassWritableCookies marks providers whose creator rewrites its cookie file
+// after every token refresh. Their refresh token is single-use, so each device
+// room gets a private copy instead of the shared read-only upload.
+func bypassWritableCookies(provider string) bool {
+	return provider == "dion"
 }
 
 func bypassSpecByCookieProvider(provider string) (string, bypassSpec, bool) {
@@ -2248,6 +2284,24 @@ func clearBypassCredentials(provider string, c config.Config) error {
 	// Device room links are deliberately preserved. Uploading replacement
 	// cookies restarts those rooms without changing users or credentials.
 	_ = os.Remove(filepath.Join("/opt/vpn-panel-managed", "bypass-"+id, "cookies.json"))
+	return removeBypassDeviceCookies(id)
+}
+
+// removeBypassDeviceCookies deletes the private per-device cookie copies of a
+// provider with writable cookies. Saved room links stay in place.
+func removeBypassDeviceCookies(provider string) error {
+	if !bypassWritableCookies(provider) {
+		return nil
+	}
+	copies, err := filepath.Glob(filepath.Join("/opt/vpn-panel-managed", "bypass-"+provider, "groups", "*", "devices", "*", "cookies.json*"))
+	if err != nil {
+		return err
+	}
+	for _, path := range copies {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove device cookie copy %s: %w", path, err)
+		}
+	}
 	return nil
 }
 
@@ -2273,6 +2327,16 @@ func restartSavedBypassRooms(cookieProvider string, c config.Config) error {
 		if output, err := run("docker", "rm", "-f", container); err != nil && !strings.Contains(strings.ToLower(output), "no such container") {
 			failures = append(failures, fmt.Errorf("group %d device %d: remove old room: %w", saved.groupID, saved.deviceID, err))
 			continue
+		}
+		// The stopped room can no longer rewrite its copy, so the next start
+		// copies the newly uploaded cookies.
+		if saved.deviceID > 0 && bypassWritableCookies(id) {
+			if dir, err := bypassDeviceDir(id, saved.groupID, saved.deviceID); err == nil {
+				if err := os.Remove(filepath.Join(dir, "cookies.json")); err != nil && !os.IsNotExist(err) {
+					failures = append(failures, fmt.Errorf("group %d device %d: replace cookie copy: %w", saved.groupID, saved.deviceID, err))
+					continue
+				}
+			}
 		}
 		var startErr error
 		if saved.deviceID > 0 {
@@ -2405,11 +2469,20 @@ func installWhitelistBypass(provider string, c config.Config) (string, error) {
 	}
 	image := bypassImage(provider)
 	hasImage := imageExists(image)
-	if !owned && (hasImage || len(containers) > 0) {
+	var legacy []string
+	for _, candidate := range bypassLegacyImages(provider) {
+		if imageExists(candidate) {
+			legacy = append(legacy, candidate)
+		}
+	}
+	if !owned && (hasImage || len(legacy) > 0 || len(containers) > 0) {
 		return "", fmt.Errorf("unowned routing resources for %s were detected; SBP will not change them", provider)
 	}
+	if owned && len(legacy) > 0 {
+		return updateWhitelistBypass(provider, spec, dir, containers, legacy, c)
+	}
 	if owned && hasImage {
-		return "Whitelist Bypass " + provider + " 0.3.8 is already prepared for dedicated device rooms", nil
+		return "Whitelist Bypass " + provider + " " + bypassVersion + " is already prepared for dedicated device rooms", nil
 	}
 	if len(containers) > 0 {
 		return "", fmt.Errorf("owned routing containers for %s exist without their image; remove the component before reinstalling it", provider)
@@ -2450,39 +2523,130 @@ func installWhitelistBypass(provider string, c config.Config) (string, error) {
 		return "", err
 	}
 	markerWritten = true
-	archive, err := downloadPinned(wbReleaseURL, wbReleaseSHA256, 40<<20)
-	if err != nil {
+	if err := buildBypassImage(spec, image, filepath.Join(dir, bypassBuildDirName)); err != nil {
 		return "", err
 	}
-	binaryData, err := unzipFile(archive, spec.Binary)
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(dir, spec.Binary), binaryData, 0755); err != nil {
-		return "", err
-	}
-	certs, err := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
-	if err != nil {
-		return "", errors.New("ca-certificates are missing; install them first")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "ca-certificates.crt"), certs, 0644); err != nil {
-		return "", err
-	}
-	dockerfile := fmt.Sprintf("FROM scratch\nCOPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\nCOPY %s /usr/local/bin/creator\nENTRYPOINT [\"/usr/local/bin/creator\"]\n", spec.Binary)
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
-		return "", err
-	}
-	if _, err := run("docker", "build", "--force-rm", "-t", image, dir); err != nil {
-		return "", err
-	}
-	_ = os.Remove(filepath.Join(dir, spec.Binary))
-	_ = os.Remove(filepath.Join(dir, "ca-certificates.crt"))
-	_ = os.Remove(filepath.Join(dir, "Dockerfile"))
 	if err := finishInstall(dir); err != nil {
 		return "", err
 	}
 	installed = true
-	return "Whitelist Bypass " + provider + " 0.3.8 prepared. A dedicated room will be created for each device.", nil
+	return "Whitelist Bypass " + provider + " " + bypassVersion + " prepared. A dedicated room will be created for each device.", nil
+}
+
+// bypassBuildDirName is the image build context inside the component
+// directory. It never holds room state and is removed after every build.
+const bypassBuildDirName = "image-build"
+
+func buildBypassImage(spec bypassSpec, image, buildDir string) error {
+	if err := os.RemoveAll(buildDir); err != nil {
+		return err
+	}
+	defer os.RemoveAll(buildDir)
+	if err := os.MkdirAll(buildDir, 0700); err != nil {
+		return err
+	}
+	archive, err := downloadPinned(wbReleaseURL, wbReleaseSHA256, 64<<20)
+	if err != nil {
+		return err
+	}
+	binaryData, err := unzipFile(archive, spec.Binary)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, spec.Binary), binaryData, 0755); err != nil {
+		return err
+	}
+	certs, err := os.ReadFile("/etc/ssl/certs/ca-certificates.crt")
+	if err != nil {
+		return errors.New("ca-certificates are missing; install them first")
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "ca-certificates.crt"), certs, 0644); err != nil {
+		return err
+	}
+	dockerfile := fmt.Sprintf("FROM scratch\nCOPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\nCOPY %s /usr/local/bin/creator\nENTRYPOINT [\"/usr/local/bin/creator\"]\n", spec.Binary)
+	if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
+		return err
+	}
+	_, err = run("docker", "build", "--force-rm", "-t", image, buildDir)
+	return err
+}
+
+// updateWhitelistBypass moves an owned install from a legacy image tag to the
+// pinned one. Room links in call.txt are not touched. Each existing room
+// container is recreated on the new image; if that fails, the room is started
+// again on the legacy image and the legacy image is kept so Update can retry.
+func updateWhitelistBypass(provider string, spec bypassSpec, dir string, containers, legacy []string, c config.Config) (string, error) {
+	image := bypassImage(provider)
+	if !imageExists(image) {
+		if err := buildBypassImage(spec, image, filepath.Join(dir, bypassBuildDirName)); err != nil {
+			return "", err
+		}
+	}
+	rooms, err := savedBypassRooms(filepath.Join(dir, "groups"))
+	if err != nil {
+		return "", err
+	}
+	roomByContainer := make(map[string]savedBypassRoom, len(rooms))
+	for _, saved := range rooms {
+		name := fmt.Sprintf("%s-g%d", spec.Container, saved.groupID)
+		if saved.deviceID > 0 {
+			name = bypassDeviceContainer(spec, saved.groupID, saved.deviceID)
+		}
+		roomByContainer[name] = saved
+	}
+	moved := 0
+	for _, name := range containers {
+		saved, ok := roomByContainer[name]
+		if !ok {
+			// Init containers and rooms without a saved link are disposable.
+			if err := removeContainersStrict(name); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if current, err := dockerCommand("inspect", "--format", "{{.Config.Image}}", name); err == nil && strings.TrimSpace(current) == image {
+			continue
+		}
+		if err := startSavedBypassRoom(provider, saved, image, c); err != nil {
+			if rollbackErr := startSavedBypassRoom(provider, saved, legacy[len(legacy)-1], c); rollbackErr != nil {
+				return "", fmt.Errorf("move %s to %s: %w; restart on the previous image also failed: %v", name, bypassVersion, err, rollbackErr)
+			}
+			return "", fmt.Errorf("move %s to %s: %w; the room was restarted on the previous image, retry Update", name, bypassVersion, err)
+		}
+		moved++
+	}
+	if err := removeImagesStrict(legacy...); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Whitelist Bypass %s updated to %s. %d room(s) restarted with unchanged links.", provider, bypassVersion, moved), nil
+}
+
+func startSavedBypassRoom(provider string, saved savedBypassRoom, image string, c config.Config) error {
+	if saved.deviceID > 0 {
+		return runBypassDeviceRoom(provider, saved.groupID, saved.deviceID, saved.room, image, c)
+	}
+	container := fmt.Sprintf("%s-g%d", bypassSpecs[provider].Container, saved.groupID)
+	if err := removeContainersStrict(container); err != nil {
+		return err
+	}
+	return runBypassRoom(provider, saved.groupID, saved.room, image, c)
+}
+
+// bypassRunImage is the image new room containers use: the pinned tag once
+// built, otherwise a legacy tag so an install awaiting Update keeps working.
+// Room containers always run with --pull never because these images exist
+// only locally.
+func bypassRunImage(provider string) (string, error) {
+	if image := bypassImage(provider); imageExists(image) {
+		return image, nil
+	}
+	legacy := bypassLegacyImages(provider)
+	for index := len(legacy) - 1; index >= 0; index-- {
+		if imageExists(legacy[index]) {
+			return legacy[index], nil
+		}
+	}
+	return "", errors.New("install the selected bypass component first")
 }
 
 func lastNonEmptyLine(path string) string {
@@ -2514,12 +2678,52 @@ func startBypassRoom(provider string, groupID int64, room string, c config.Confi
 	if err := removeContainersStrict(container); err != nil {
 		return err
 	}
+	image, err := bypassRunImage(provider)
+	if err != nil {
+		return err
+	}
+	return runBypassRoom(provider, groupID, room, image, c)
+}
+
+// runBypassRoom starts a legacy shared group room. The caller removes any
+// previous container with the same name.
+func runBypassRoom(provider string, groupID int64, room, image string, c config.Config) error {
+	spec := bypassSpecs[provider]
+	container := fmt.Sprintf("%s-g%d", spec.Container, groupID)
 	cookiePath := filepath.Join(c.BypassSecretsDir, spec.CookieProvider, "cookies.json")
-	args := []string{"run", "-d", "--name", container, "--restart", "unless-stopped", "--read-only", "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--memory", "256m", "--pids-limit", "128", "--log-driver", "none", "-v", cookiePath + ":/run/secrets/cookies.json:ro", bypassImage(provider), "--cookies", "/run/secrets/cookies.json", spec.AttachFlag, room, "--resources", "default"}
+	args := []string{"run", "-d", "--pull", "never", "--name", container, "--restart", "unless-stopped", "--read-only", "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--memory", "256m", "--pids-limit", "128", "--log-driver", "none", "-v", cookiePath + ":/run/secrets/cookies.json:ro", image, "--cookies", "/run/secrets/cookies.json", spec.AttachFlag, room, "--resources", "default"}
 	if _, err := run("docker", args...); err != nil {
 		return err
 	}
 	return waitContainerReady(container, 12*time.Second, nil)
+}
+
+// bypassDeviceCookies returns the Docker mounts and the --cookies path for a
+// device room. Read-only providers share the uploaded file. Writable providers
+// use a private copy in the device directory, mounted at /data so the creator
+// can replace it atomically; the copy is created from the upload when missing.
+func bypassDeviceCookies(provider, dir string, c config.Config) ([]string, string, error) {
+	spec := bypassSpecs[provider]
+	shared := filepath.Join(c.BypassSecretsDir, spec.CookieProvider, "cookies.json")
+	if !bypassWritableCookies(provider) {
+		return []string{"-v", shared + ":/run/secrets/cookies.json:ro"}, "/run/secrets/cookies.json", nil
+	}
+	private := filepath.Join(dir, "cookies.json")
+	if !fileExists(private) {
+		body, err := os.ReadFile(shared)
+		if err != nil {
+			return nil, "", fmt.Errorf("read uploaded cookies: %w", err)
+		}
+		temporary := private + ".tmp"
+		if err := os.WriteFile(temporary, body, 0600); err != nil {
+			return nil, "", err
+		}
+		if err := os.Rename(temporary, private); err != nil {
+			_ = os.Remove(temporary)
+			return nil, "", err
+		}
+	}
+	return []string{"-v", dir + ":/data"}, "/data/cookies.json", nil
 }
 
 func bypassDeviceDir(provider string, groupID, deviceID int64) (string, error) {
@@ -2541,19 +2745,36 @@ func removeEmptyDirectory(path string) error {
 }
 
 func startBypassDeviceRoom(provider string, groupID, deviceID int64, room string, c config.Config) error {
-	spec, ok := bypassSpecs[provider]
-	if !ok || groupID < 1 || deviceID < 1 || strings.TrimSpace(room) == "" {
+	if _, ok := bypassSpecs[provider]; !ok || groupID < 1 || deviceID < 1 || strings.TrimSpace(room) == "" {
 		return errors.New("invalid device room")
 	}
 	if _, owned := componentOwnership("bypass-" + provider); !owned {
 		return errors.New("the selected bypass component is not owned by SBP")
 	}
+	image, err := bypassRunImage(provider)
+	if err != nil {
+		return err
+	}
+	return runBypassDeviceRoom(provider, groupID, deviceID, room, image, c)
+}
+
+func runBypassDeviceRoom(provider string, groupID, deviceID int64, room, image string, c config.Config) error {
+	spec := bypassSpecs[provider]
 	container := bypassDeviceContainer(spec, groupID, deviceID)
 	if err := removeContainersStrict(container); err != nil {
 		return err
 	}
-	cookiePath := filepath.Join(c.BypassSecretsDir, spec.CookieProvider, "cookies.json")
-	args := []string{"run", "-d", "--name", container, "--restart", "unless-stopped", "--read-only", "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--memory", "256m", "--pids-limit", "128", "--log-driver", "none", "-v", cookiePath + ":/run/secrets/cookies.json:ro", bypassImage(provider), "--cookies", "/run/secrets/cookies.json", spec.AttachFlag, strings.TrimSpace(room), "--resources", "default"}
+	dir, err := bypassDeviceDir(provider, groupID, deviceID)
+	if err != nil {
+		return err
+	}
+	mounts, cookies, err := bypassDeviceCookies(provider, dir, c)
+	if err != nil {
+		return err
+	}
+	args := []string{"run", "-d", "--pull", "never", "--name", container, "--restart", "unless-stopped", "--read-only", "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--memory", "256m", "--pids-limit", "128", "--log-driver", "none"}
+	args = append(args, mounts...)
+	args = append(args, image, "--cookies", cookies, spec.AttachFlag, strings.TrimSpace(room), "--resources", "default")
 	if _, err := run("docker", args...); err != nil {
 		return err
 	}
@@ -2566,8 +2787,12 @@ func provisionBypassDeviceRoom(method string, groupID, deviceID int64, c config.
 	if !ok || groupID < 1 || deviceID < 1 {
 		return "", errors.New("invalid group, device, or bypass provider")
 	}
-	if _, owned := componentOwnership("bypass-" + provider); !owned || !imageExists(bypassImage(provider)) {
+	if _, owned := componentOwnership("bypass-" + provider); !owned {
 		return "", errors.New("install the selected bypass component first")
+	}
+	image, err := bypassRunImage(provider)
+	if err != nil {
+		return "", err
 	}
 	cookiePath := filepath.Join(c.BypassSecretsDir, spec.CookieProvider, "cookies.json")
 	if !fileExists(cookiePath) {
@@ -2602,15 +2827,31 @@ func provisionBypassDeviceRoom(method string, groupID, deviceID int64, c config.
 			return "", err
 		}
 		_ = os.Remove(callFile)
-		args := []string{"run", "-d", "--name", initName, "--read-only", "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--memory", "256m", "--pids-limit", "128", "--log-driver", "none", "-v", dir + ":/data", "-v", cookiePath + ":/run/secrets/cookies.json:ro", bypassImage(provider), "--cookies", "/run/secrets/cookies.json", "--write-file", "/data/call.txt", "--resources", "default"}
+		mounts, cookies, err := bypassDeviceCookies(provider, dir, c)
+		if err != nil {
+			return "", err
+		}
+		if !bypassWritableCookies(provider) {
+			mounts = append([]string{"-v", dir + ":/data"}, mounts...)
+		}
+		// The init container is the only bypass container with a log: it is
+		// capped at 1 MiB and disappears with the container right below, so
+		// a failed room creation reports the creator's own error.
+		args := []string{"run", "-d", "--pull", "never", "--name", initName, "--read-only", "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--memory", "256m", "--pids-limit", "128", "--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=1"}
+		args = append(args, mounts...)
+		args = append(args, image, "--cookies", cookies, "--write-file", "/data/call.txt", "--resources", "default")
 		if _, err := run("docker", args...); err != nil {
 			return "", err
 		}
 		for n := 0; n < 60 && room == ""; n++ {
 			time.Sleep(time.Second)
 			room = lastNonEmptyLine(callFile)
+			if state, err := inspectContainerState(initName); room == "" && err == nil && !state.Running {
+				room = lastNonEmptyLine(callFile)
+				break
+			}
 		}
-		logs := fixedCommand("docker", "logs", initName, "--tail", "30").Output
+		logs := fixedCommand("docker", "logs", "--tail", "30", initName).Output
 		if err := removeContainersStrict(initName); err != nil {
 			return "", err
 		}
@@ -2850,7 +3091,7 @@ func desiredProfile(method, credential string) (renderedProfile, error) {
 		profile.ProfileGeneration = amneziaWGProfileGeneration
 		profile.ProtocolVersion = "3.1"
 	case "bypass-wb", "bypass-telemost", "bypass-dion", "bypass-vk":
-		profile.ProtocolVersion = "0.3.8"
+		profile.ProtocolVersion = bypassVersion
 	default:
 		return renderedProfile{}, errors.New("unsupported method")
 	}
@@ -3104,6 +3345,11 @@ func cleanupRuntimeArtifacts(c config.Config) error {
 		if _, owned := componentOwnership(id); owned {
 			if err := cleanupInterruptedInstall(dir); err != nil {
 				problems = append(problems, err)
+			}
+			if strings.HasPrefix(id, "bypass-") {
+				if err := os.RemoveAll(filepath.Join(dir, bypassBuildDirName)); err != nil {
+					problems = append(problems, fmt.Errorf("remove %s image build context: %w", id, err))
+				}
 			}
 		}
 	}

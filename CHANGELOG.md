@@ -3,6 +3,13 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.7.6] - 2026-10-18
+
+- Routing integrations use whitelist-bypass 0.4.4. Installed WB Stream, Yandex Telemost, DION and VK Calls components offer Update, which rebuilds the image and moves existing rooms without changing their links.
+- DION rooms keep working after token rotation: each device room keeps a private writable cookie copy. For more than one device, include email and password in the cookie file.
+- Failed room creation shows the creator's own log.
+- Creating a routing device or updating routing rooms no longer fails with a network error when the provider takes longer than 30 seconds to open a call.
+
 ## [1.7.5] - 2026-09-09
 
 - Editing a profile or group keeps the current page position after saving.
