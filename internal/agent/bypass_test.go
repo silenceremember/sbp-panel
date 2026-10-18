@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/silenceremember/sbp-panel/internal/config"
@@ -134,6 +135,30 @@ func TestBypassImagesUsePinnedAndLegacyTags(t *testing.T) {
 	}
 	if got := bypassLegacyImages("dion"); !reflect.DeepEqual(got, []string{"vpn-panel/whitelist-bypass-dion:0.3.8"}) {
 		t.Fatalf("legacy images = %#v", got)
+	}
+}
+
+func TestNewBypassRoomsRequireThePinnedImage(t *testing.T) {
+	legacy := bypassLegacyImages("telemost")[0]
+	images := map[string]bool{legacy: true}
+	exists := func(image string) bool { return images[image] }
+
+	if image, err := bypassRoomImage("telemost", false, exists); err != nil || image != legacy {
+		t.Fatalf("saved room on legacy install = %q, %v; want legacy image", image, err)
+	}
+	if image, err := bypassRoomImage("telemost", true, exists); err == nil || image != "" || !strings.HasPrefix(err.Error(), "Update the component first") {
+		t.Fatalf("new room on legacy install = %q, %v; want Update the component first", image, err)
+	}
+
+	images[bypassImage("telemost")] = true
+	for _, newRoom := range []bool{false, true} {
+		if image, err := bypassRoomImage("telemost", newRoom, exists); err != nil || image != bypassImage("telemost") {
+			t.Fatalf("room (new=%v) after Update = %q, %v; want pinned image", newRoom, image, err)
+		}
+	}
+
+	if _, err := bypassRoomImage("telemost", true, func(string) bool { return false }); err == nil || !strings.Contains(err.Error(), "install the selected bypass component first") {
+		t.Fatalf("room without any image = %v", err)
 	}
 }
 

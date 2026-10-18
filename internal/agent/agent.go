@@ -2637,12 +2637,22 @@ func startSavedBypassRoom(provider string, saved savedBypassRoom, image string, 
 // Room containers always run with --pull never because these images exist
 // only locally.
 func bypassRunImage(provider string) (string, error) {
-	if image := bypassImage(provider); imageExists(image) {
+	return bypassRoomImage(provider, false, imageExists)
+}
+
+// bypassRoomImage picks the image for a device room. A saved room may keep
+// running on a legacy engine until Update moves it, but a new room needs the
+// pinned engine: legacy engines fail against current provider pages and APIs.
+func bypassRoomImage(provider string, newRoom bool, exists func(string) bool) (string, error) {
+	if image := bypassImage(provider); exists(image) {
 		return image, nil
 	}
 	legacy := bypassLegacyImages(provider)
 	for index := len(legacy) - 1; index >= 0; index-- {
-		if imageExists(legacy[index]) {
+		if exists(legacy[index]) {
+			if newRoom {
+				return "", fmt.Errorf("Update the component first: new rooms require whitelist-bypass %s", bypassVersion)
+			}
 			return legacy[index], nil
 		}
 	}
@@ -2790,7 +2800,13 @@ func provisionBypassDeviceRoom(method string, groupID, deviceID int64, c config.
 	if _, owned := componentOwnership("bypass-" + provider); !owned {
 		return "", errors.New("install the selected bypass component first")
 	}
-	image, err := bypassRunImage(provider)
+	dir, err := bypassDeviceDir(provider, groupID, deviceID)
+	if err != nil {
+		return "", err
+	}
+	callFile := filepath.Join(dir, "call.txt")
+	room := lastNonEmptyLine(callFile)
+	image, err := bypassRoomImage(provider, room == "", imageExists)
 	if err != nil {
 		return "", err
 	}
@@ -2798,15 +2814,9 @@ func provisionBypassDeviceRoom(method string, groupID, deviceID int64, c config.
 	if !fileExists(cookiePath) {
 		return "", errors.New("upload cookies for the selected bypass provider first")
 	}
-	dir, err := bypassDeviceDir(provider, groupID, deviceID)
-	if err != nil {
-		return "", err
-	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	callFile := filepath.Join(dir, "call.txt")
-	room := lastNonEmptyLine(callFile)
 	createdRoom := room == ""
 	completed := false
 	defer func() {

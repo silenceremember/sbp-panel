@@ -3,6 +3,10 @@
 Concise user-facing changes for every SBP release. Pre-release status is shown
 on GitHub and is not repeated here.
 
+## [1.7.7] - 2026-10-18
+
+- New routing rooms are refused on a legacy whitelist-bypass engine with Update the component first. Saved rooms keep running until Update moves them to 0.4.4.
+
 ## [1.7.6] - 2026-10-18
 
 - Routing integrations use whitelist-bypass 0.4.4. Installed WB Stream, Yandex Telemost, DION and VK Calls components offer Update, which rebuilds the image and moves existing rooms without changing their links.
