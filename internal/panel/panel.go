@@ -63,6 +63,23 @@ var routingComponentSpecs = map[string]routingComponentSpec{
 	"bypass-vk":       {method: "bypass-vk", provider: "vk"},
 }
 
+// panelWriteTimeout bounds ordinary responses. Creating a routing room waits
+// up to a minute for the provider to open a call and then for the room
+// container to become ready, so requests that create rooms extend their own
+// write deadline by bypassRoomWriteBudget per room instead. Without that the
+// server drops the response mid-operation and the browser reports a network
+// failure while the room is still being created.
+const (
+	panelWriteTimeout     = 30 * time.Second
+	bypassRoomWriteBudget = 2 * time.Minute
+)
+
+// extendWriteDeadline moves the response write deadline to d from now. A
+// ResponseWriter without deadline support has no deadline to extend.
+func extendWriteDeadline(w http.ResponseWriter, d time.Duration) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d))
+}
+
 type server struct {
 	cfg           config.Config
 	db            *store.Store
@@ -103,7 +120,7 @@ func Run(configPath string) error {
 	mux := http.NewServeMux()
 	s.routes(mux)
 	h := securityHeaders(mux)
-	httpServer := &http.Server{Addr: c.Listen, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
+	httpServer := &http.Server{Addr: c.Listen, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: panelWriteTimeout, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
 	fmt.Printf("Simple Bridge Panel listening on https://0.0.0.0%s\n", c.Listen)
 	return httpServer.ListenAndServeTLS(c.TLSCert, c.TLSKey)
 }
@@ -772,8 +789,17 @@ func (s *server) createDevice(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
+	bypass := isBypassMethod(in.Method)
+	if bypass {
+		// The lock may be held by another room operation; extend again once it
+		// is acquired so this room gets its full budget.
+		extendWriteDeadline(w, bypassRoomWriteBudget)
+	}
 	s.credentialMu.Lock()
 	defer s.credentialMu.Unlock()
+	if bypass {
+		extendWriteDeadline(w, bypassRoomWriteBudget)
+	}
 	// Two identical POSTs can both pass validation before the first request
 	// finishes provisioning. Recheck under the same lock so only one credential
 	// reaches the managed runtime.
@@ -1705,8 +1731,26 @@ func (s *server) refreshComponentProfiles(w http.ResponseWriter, r *http.Request
 		fail(w, http.StatusBadRequest, errors.New("this component does not support profile refreshes"))
 		return
 	}
+	if routing {
+		extendWriteDeadline(w, bypassRoomWriteBudget)
+	}
 	s.credentialMu.Lock()
 	defer s.credentialMu.Unlock()
+	if routing {
+		// Reconciliation may create one room per device of this provider.
+		devices, err := s.db.ListAllDevices()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		rooms := 1
+		for _, device := range devices {
+			if device.Method == routingSpec.method {
+				rooms++
+			}
+		}
+		extendWriteDeadline(w, time.Duration(rooms)*bypassRoomWriteBudget)
+	}
 	component, err := s.componentProfileState(id)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err)

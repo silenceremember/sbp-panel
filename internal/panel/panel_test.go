@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1508,6 +1509,95 @@ func TestRepeatedCreateDeviceReturnsConflict(t *testing.T) {
 	devices, err := db.ListDevices(groupID)
 	if err != nil || len(devices) != 1 {
 		t.Fatalf("devices = %#v, err=%v", devices, err)
+	}
+}
+
+func TestSlowRoutingRoomResponsesOutliveThePanelWriteTimeout(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.DB.Close()
+	groupID, err := db.CreateGroupWithExpiration("Family", "", 30, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleID, err := db.CreateDevice(groupID, "Laptop", "bypass-wb", "wbstream://old", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const writeTimeout = 100 * time.Millisecond
+	var mu sync.Mutex
+	rooms := map[int64]string{}
+	agent := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"components":[{"id":"bypass-wb","installed":true,"external":false,"profile_version":"0.4.4","profile_generation":1}]}`
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/bypass/rooms":
+			mu.Lock()
+			list := make([]string, 0, len(rooms))
+			for id, code := range rooms {
+				list = append(list, fmt.Sprintf(`{"group_id":%d,"device_id":%d,"provider":"wbstream","code":%q}`, groupID, id, code))
+			}
+			mu.Unlock()
+			body = `{"rooms":[` + strings.Join(list, ",") + `]}`
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/credentials":
+			var input struct {
+				Method   string `json:"method"`
+				DeviceID int64  `json:"device_id"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+				return nil, err
+			}
+			// Opening a provider call takes far longer than an ordinary request.
+			time.Sleep(4 * writeTimeout)
+			if input.Method == "xray" {
+				body = `{"ok":true,"credential":"vless://slow","profile_generation":1,"protocol_version":"26.3.27"}`
+				break
+			}
+			code := fmt.Sprintf("device-%d", input.DeviceID)
+			mu.Lock()
+			rooms[input.DeviceID] = code
+			mu.Unlock()
+			body = fmt.Sprintf(`{"ok":true,"credential":"wbstream://%s","profile_generation":1,"protocol_version":"0.4.4"}`, code)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	s := &server{db: db, agent: agent}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/groups/{id}/devices", s.createDevice)
+	mux.HandleFunc("POST /api/components/{id}/profiles", s.refreshComponentProfiles)
+	panel := httptest.NewUnstartedServer(mux)
+	panel.Config.WriteTimeout = writeTimeout
+	panel.Start()
+	defer panel.Close()
+	post := func(path, body string) (int, string, error) {
+		response, err := panel.Client().Post(panel.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			return 0, "", err
+		}
+		defer response.Body.Close()
+		payload, err := io.ReadAll(response.Body)
+		return response.StatusCode, string(payload), err
+	}
+
+	// An ordinary slow request still hits the write timeout, which proves the
+	// server below reproduces the dropped response.
+	if status, body, err := post(fmt.Sprintf("/api/groups/%d/devices", groupID), `{"name":"Desktop","method":"xray"}`); err == nil {
+		t.Fatalf("slow non-routing response was not cut by the write timeout: status=%d body=%q", status, body)
+	}
+
+	status, body, err := post(fmt.Sprintf("/api/groups/%d/devices", groupID), `{"name":"Phone","method":"bypass-wb"}`)
+	if err != nil || status != http.StatusCreated || !strings.Contains(body, "wbstream://device-") {
+		t.Fatalf("room creation response was dropped: status=%d body=%q err=%v", status, body, err)
+	}
+
+	status, body, err = post("/api/components/bypass-wb/profiles", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("room reconciliation response was dropped: status=%d body=%q err=%v", status, body, err)
+	}
+	stale, err := db.Device(staleID)
+	if err != nil || stale.Credential != fmt.Sprintf("wbstream://device-%d", staleID) {
+		t.Fatalf("stale device did not receive its room: %#v err=%v", stale, err)
 	}
 }
 
