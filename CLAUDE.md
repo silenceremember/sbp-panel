@@ -1,7 +1,7 @@
-# AGENTS.md
+# CLAUDE.md
 
-This file applies to the entire repository. A more specific `AGENTS.md` or
-`AGENTS.override.md` in a subdirectory may refine these rules for that subtree.
+Guidance for Claude Code in this repository. A `CLAUDE.md` in a subdirectory
+may refine these rules for that subtree.
 
 ## Project
 
@@ -19,8 +19,8 @@ Supported production target:
 - root or sudo access for installation.
 
 Do not broaden support claims without implementation and tests.
-SBP 1.x starts from a fresh server. Do not add pre-1.0 migrations, adoption,
-upgrade payloads, or cleanup paths.
+SBP 1.x starts from a fresh server. Upgrades inside 1.x must keep working
+installations working; do not add adoption of pre-1.0 or foreign installs.
 
 ## Repository map
 
@@ -37,7 +37,7 @@ upgrade payloads, or cleanup paths.
 - `.github/workflows/release.yml`: CI and release bundle pipeline.
 - `README.md`: concise user-facing overview and commands.
 - `CHANGELOG.md`: concise per-version notes and GitHub Release body source.
-- `PLANS.md`: format and live record for complex execution plans.
+- `.claude/plans/`: plans for work that must survive across sessions.
 
 ## Sources of truth
 
@@ -49,26 +49,40 @@ Use this order when facts disagree:
 4. comments, old plans, and historical discussion.
 
 Never invent a protocol, version, port, feature, compatibility claim, or
-recovery guarantee. Verify it in the current tree.
+recovery guarantee. Verify it in the current tree. For third-party components
+(Xray, AmneziaWG, whitelist-bypass), verify flags, archive contents, and
+checksums against the pinned upstream release before changing a pin.
 
 ## Working process
 
-1. Read this file, `PLANS.md`, the relevant code, and `git status` before
-   editing.
-2. Preserve unrelated and pre-existing user changes.
-3. For a small, local, low-risk change, implement directly.
-4. For multi-step, architectural, destructive, security-sensitive, or
-   long-running work, create or update an ExecPlan in `PLANS.md` first.
+1. Read the relevant code and `git status` before editing. Preserve unrelated
+   and pre-existing user changes.
+2. For a small, local, low-risk change, implement directly.
+3. For multi-step, architectural, destructive, security-sensitive, or
+   long-running work, agree on a plan first (plan mode is fine). If the work
+   may span sessions, write it to `.claude/plans/<slug>.md` using the format
+   below and keep it current while working.
+4. Use subagents for broad read-only exploration; keep design decisions and
+   edits in the main session.
 5. Make the smallest coherent change that fully solves the problem.
 6. Validate in proportion to risk, then inspect the final diff.
-7. Update the plan's progress, decisions, discoveries, and outcome while the
-   work proceeds. Do not leave a completed plan claiming unfinished work.
-8. Do not commit, tag, publish a release, or mutate a live server unless the
+7. Do not commit, tag, publish a release, or mutate a live server unless the
    user explicitly asks.
 
-An ExecPlan must state the desired outcome, constraints, observable acceptance
-criteria, exact implementation context, validation commands, and recovery path.
-It must be usable by a contributor who has only the repository and the plan.
+### Plan format
+
+A plan in `.claude/plans/` must be usable by someone who has only the
+repository and the plan:
+
+- desired observable outcome;
+- constraints and acceptance criteria;
+- exact implementation context (files, functions, external pins);
+- progress, decisions, and discoveries, kept current;
+- validation commands and their results;
+- recovery path for partial failure;
+- final outcome and remaining risks.
+
+Delete the plan once its outcome is verified. Plans are not a changelog.
 
 ## Safety invariants
 
@@ -111,13 +125,16 @@ It must be usable by a contributor who has only the repository and the plan.
   Installing, updating, or removing one variant must not mutate another.
 - Routing integrations use one independently managed room per device. Room
   traffic is attributed to that device and rolled up into its group total.
+  Providers that rotate credentials on use (DION) get a private writable
+  cookie copy per device room; the others mount the uploaded cookies read-only.
 - Deleting a group must clean its devices, credentials, traffic rows, and saved
   routing rooms, while reporting any external cleanup that could not be proven.
 - Traffic data covers only the current UTC month. Xray and AmneziaWG can be
   measured per device; routing room traffic is aggregated per group/provider.
 - Traffic counters are operational estimates, never billing-grade claims.
-- Persistent managed containers use Docker logging disabled unless a bounded,
-  documented diagnostic path requires otherwise.
+- Persistent managed containers use Docker logging disabled. Short-lived
+  diagnostic containers may use a size-capped log that is removed together
+  with the container.
 
 ## UI conventions
 
@@ -147,6 +164,7 @@ It must be usable by a contributor who has only the repository and the plan.
   in-memory tables, and polling intervals.
 - For Docker operations, distinguish container-not-found and image-not-found
   from daemon or permission failures. Fail closed on unknown inventory state.
+  Locally built images are run with `--pull never`.
 - Do not silently ignore cleanup failures when doing so can leave working
   credentials, restartable containers, or lost ownership state.
 - Comments should explain non-obvious constraints and failure semantics, not
@@ -200,15 +218,13 @@ remaining risk.
   keep it out of `/releases/latest`; it is a usable build under observation.
 - Promoting an observed build changes the existing GitHub Release category. It
   never moves or recreates the tag. Publish a newer numeric version for fixes.
-- `1.0.0` is reserved for a deliberately reviewed compatibility baseline, not
-  merely the next feature release.
 - A release requires explicit user authorization, a clean intended diff, the
   full applicable checks, a version bump, a matching commit and tag, and review
   of the GitHub Actions result.
 - The release archive is an explicit allowlist containing only `LICENSE`,
   `NOTICE`, `bootstrap.sh`, `uninstall.sh`, and `sbp-panel-linux-amd64`.
-  Repository source, coordination, CI, local tooling, and the public installer
-  entrypoint must not be copied merely because they are tracked.
+  Repository source, coordination files (`CLAUDE.md`, `.claude/`), CI, local
+  tooling, and the public installer entrypoint must not be shipped.
 - Never move or reuse an existing release tag.
 
 ## Definition of done
@@ -222,4 +238,5 @@ A change is done only when:
 - documentation reflects user-visible behavior;
 - temporary files and debug instrumentation are absent;
 - `git diff` contains only intended changes;
-- an active ExecPlan, if used, records the final outcome and remaining risks.
+- a plan in `.claude/plans/`, if used, records the final outcome and remaining
+  risks, or has been deleted after verification.
